@@ -156,6 +156,12 @@ This repo was vibecoded with [opencode](https://opencode.ai) and **Big Pickle**
 on a live machine, by pressing buttons and watching the lights. It works — the
 trackpad that wrote this sentence is real. Readme also generated with opencode.
 
+(human)
+took around 45 mintues with a nice fat prompt. a lot of the debugging was done before hand by me (not included in the time), the actual human. I just fed it the problems and how I assumed it should be fixed, and I told it to make a github repo for me. I will mark the human made things in this repo with "(human)." 
+
 ## Human made notes
+
+(human)
 Will update for other distros eventually. make an issue or something i guess if you have a problem
 _(Edit: Linux Mint / Ubuntu / Debian support landed 2026-09-20 — see the installers above.)_
+_(Edit: Tested on linux mint/ubuntu on another laptop of the same model i have. it semi worked, but I had to do some shennanigans to get it functional)_
