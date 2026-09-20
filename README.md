@@ -154,7 +154,7 @@ so a full revert is always possible.
 
 This repo was vibecoded with [opencode](https://opencode.ai) and **Big Pickle**
 on a live machine, by pressing buttons and watching the lights. It works — the
-trackpad that wrote this sentence is real.
+trackpad that wrote this sentence is real. Readme also generated with opencode.
 
 ## Human made notes
 Will update for other distros eventually. make an issue or something i guess if you have a problem
