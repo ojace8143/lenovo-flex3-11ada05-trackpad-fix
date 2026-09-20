@@ -55,6 +55,12 @@ mkinitcpio (>= 39) ships a built-in `acpi_override` install hook that stages
 every `*.aml` in `/etc/initcpio/acpi_override/` into the **early uncompressed
 cpio** of the initramfs / UKI.
 
+Ubuntu-family systems (Linux Mint/Debian) use **initramfs-tools**, which has no
+built-in hook. `scripts/install-ubuntu.sh` installs a small hook into
+`/etc/initramfs-tools/hooks/` that stages the table into
+`$DESTDIR/kernel/firmware/acpi/` — the same early-cpio location, so the end
+result is identical.
+
 ## Why not just downgrade the BIOS?
 
 The forum-famous fix is a BIOS downgrade to `FPCN21WW`. Downsides:

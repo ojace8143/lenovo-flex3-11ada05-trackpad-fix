@@ -31,14 +31,22 @@ a bricked firmware — and it survives kernel updates.
 |---|---|
 | Machine | Lenovo IdeaPad Flex 3 11ADA05 (`82G4`) |
 | BIOS | `FPCN26WW` (05/2022) — fixed, **no downgrade needed** |
-| Distro | Omarchy (Arch-based, Hyprland, limine UKI) |
-| Kernel | `7.2.5-3-omarchy` |
+| Distro | Omarchy (Arch-based, Hyprland, limine UKI) — installer for **Linux Mint / Ubuntu / Debian** included |
+| Kernel | `7.2.5-3-omarchy` (works on Ubuntu-family kernels too) |
 | Secure Boot | OFF (required — see below) |
+
+The mechanism is a **kernel ACPI table override**, so it is not distro-specific —
+only the initramfs plumbing differs. Installers provided for:
+
+- **Omarchy / Arch** (mkinitcpio `acpi_override` hook, limine UKI) — `install-omarchy.sh`
+- **Linux Mint / Ubuntu / Debian** (initramfs-tools hook) — `install-ubuntu.sh`
 
 ## Prerequisites
 
 - Root access (`sudo` or `pkexec`, depending on your setup).
 - `acpica` package (`iasl`, `acpidump`).
+  - Omarchy/Arch: `sudo pacman -S acpica`
+  - Linux Mint/Ubuntu/Debian: `sudo apt install acpica-tools`
 - **Secure Boot must be OFF.** The kernel refuses ACPI table overrides when
   Secure Boot or lockdown is active. Check with:
 
@@ -72,6 +80,17 @@ mkinitcpio's `acpi_override` hook via a drop-in config
 (`/etc/mkinitcpio.conf.d/omarchy_zz_acpi_override.conf`), and rebuilds the UKI
 with `limine-mkinitcpio`.
 
+**On Linux Mint / Ubuntu / Debian:**
+
+```sh
+sudo ./scripts/install-ubuntu.sh
+```
+
+Stages the table at `/etc/acpi_override/dsdt.aml`, installs a small
+`initramfs-tools` hook (`/etc/initramfs-tools/hooks/acpi_override`) that copies
+it into the initramfs at `kernel/firmware/acpi/dsdt.aml`, and runs
+`update-initramfs -u`.
+
 **On plain Arch with GRUB / systemd-boot:**
 
 ```sh
@@ -86,7 +105,9 @@ ls /sys/bus/i2c/devices/ | grep -i msft     # i2c-MSFT0001:00
 grep -A4 "MSFT0001" /proc/bus/input/devices # MSFT0001:00 04F3:3072 Touchpad
 ```
 
-or run `./scripts/verify.sh`.
+or run `./scripts/verify.sh`. To confirm the table actually made it into the
+initramfs, check a Mint/Ubuntu image with `lsinitramfs /boot/initrd.img-$(uname -r) | grep acpi`
+(Omarchy/Arch: `unmkinitramfs ... | grep acpi`, or inspect the UKI).
 
 ## Clickpad behavior & recommended config
 
@@ -106,10 +127,16 @@ configuration that makes all of this behave.
 If the machine hangs at boot after installing, remove the override and rebuild:
 
 ```sh
-sudo rm /etc/initcpio/acpi_override/dsdt.aml          # Arch
-sudo rm /etc/mkinitcpio.conf.d/omarchy_zz_acpi_override.conf   # Omarchy
-sudo mkinitcpio -P                                     # Arch
-sudo limine-mkinitcpio                                 # Omarchy
+# Arch / Omarchy
+sudo rm /etc/initcpio/acpi_override/dsdt.aml
+sudo rm /etc/mkinitcpio.conf.d/omarchy_zz_acpi_override.conf
+sudo mkinitcpio -P                          # Arch
+sudo limine-mkinitcpio                      # Omarchy
+
+# Linux Mint / Ubuntu / Debian
+sudo rm /etc/initramfs-tools/hooks/acpi_override
+sudo rm /etc/acpi_override/dsdt.aml
+sudo update-initramfs -u
 ```
 
 The override only swaps the ACPI table in RAM — it writes nothing to firmware,
@@ -131,3 +158,4 @@ trackpad that wrote this sentence is real.
 
 ## Human made notes
 Will update for other distros eventually. make an issue or something i guess if you have a problem
+_(Edit: Linux Mint / Ubuntu / Debian support landed 2026-09-20 — see the installers above.)_

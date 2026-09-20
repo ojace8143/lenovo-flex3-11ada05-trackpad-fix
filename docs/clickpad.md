@@ -53,3 +53,13 @@ libinput debug-events --show-keycodes --device /dev/input/eventXX
 
 The "Mouse" and "Touchpad" event X numbers can shift between boots — map them
 via `/proc/bus/input/devices` or `/sys/class/input/event*/device/name`.
+
+## On Linux Mint (Cinnamon) / GNOME
+
+The same libinput behavior applies — these are just GUI equivalents:
+
+- **Cinnamon**: System Settings → Mouse and Touchpad → enable *Enable
+  tap-to-click*; use the click action for the *bottom-right corner* (button
+  area) rather than relying on two-finger taps.
+- **GNOME**: Settings → Mouse & Touchpad → *Tap to click*, and the click-action
+  method (*two-finger* vs *areas in corner*) picker.
