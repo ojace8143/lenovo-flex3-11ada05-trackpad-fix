@@ -86,10 +86,24 @@ with `limine-mkinitcpio`.
 sudo ./scripts/install-ubuntu.sh
 ```
 
-Stages the table at `/etc/acpi_override/dsdt.aml`, installs a small
-`initramfs-tools` hook (`/etc/initramfs-tools/hooks/acpi_override`) that copies
-it into the initramfs at `kernel/firmware/acpi/dsdt.aml`, and runs
-`update-initramfs -u`.
+Stages the table at `/etc/acpi_override/dsdt.aml`, pre-builds a tiny
+uncompressed "early" initramfs archive (`/etc/acpi_override/acpi_override.cpio`)
+containing `kernel/firmware/acpi/dsdt.aml`, and installs a small
+`initramfs-tools` hook (`/etc/initramfs-tools/hooks/acpi_override`) that
+prepends that archive on every initramfs build via
+`prepend_earlyinitramfs`. It then runs `update-initramfs -u -k all`.
+
+The kernel digs ACPI overrides out of the **raw initrd bytes before any
+decompression** (see `docs/diagnosis.md`), so staging the table into the
+leading uncompressed section is required — dropping it into the compressed
+main archive would be silently ignored. This script does exactly that, so the
+stock gzip/zstd initramfs works with no `COMPRESS` changes.
+
+Remove it again with:
+
+```sh
+sudo ./scripts/install-ubuntu.sh --uninstall
+```
 
 **On plain Arch with GRUB / systemd-boot:**
 
@@ -134,9 +148,11 @@ sudo mkinitcpio -P                          # Arch
 sudo limine-mkinitcpio                      # Omarchy
 
 # Linux Mint / Ubuntu / Debian
-sudo rm /etc/initramfs-tools/hooks/acpi_override
-sudo rm /etc/acpi_override/dsdt.aml
-sudo update-initramfs -u
+sudo ./scripts/install-ubuntu.sh --uninstall
+# ...or manually:
+# sudo rm /etc/initramfs-tools/hooks/acpi_override
+# sudo rm -r /etc/acpi_override
+# sudo update-initramfs -u
 ```
 
 The override only swaps the ACPI table in RAM — it writes nothing to firmware,

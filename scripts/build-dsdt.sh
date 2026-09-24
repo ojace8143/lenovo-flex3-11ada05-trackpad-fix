@@ -10,7 +10,7 @@ set -euo pipefail
 BUILD="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/build"
 
 die() { echo "error: $*" >&2; exit 1; }
-need() { command -v "$1" >/dev/null 2>&1 || die "'$1' missing (install the 'acpica' package)"; }
+need() { command -v "$1" >/dev/null 2>&1 || die "'$1' missing (Debian/Ubuntu/Mint: sudo apt install acpica-tools | Arch/Omarchy: sudo pacman -S acpica)"; }
 
 for t in iasl acpidump python3; do need "$t"; done
 [ "$EUID" -eq 0 ] || { echo "run as root:  sudo $0   (or: pkexec $0)"; exit 1; }
@@ -158,4 +158,4 @@ echo "done:"
 echo "  $BUILD/dsdt.aml        ($(stat -c%s "$BUILD/dsdt.aml") bytes)"
 echo "  $BUILD/acpi_override   ($(stat -c%s "$BUILD/acpi_override") bytes)"
 echo
-echo "next: sudo ./scripts/install-omarchy.sh   (or install-arch.sh)"
+echo "next: sudo ./scripts/install-omarchy.sh   (or install-arch.sh / install-ubuntu.sh)"
