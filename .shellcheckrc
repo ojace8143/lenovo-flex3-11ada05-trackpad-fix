@@ -1,0 +1,3 @@
+# shellcheck options for scripts/ and tests/
+# Keep this file minimal; prefer fixing findings over muting them.
+external-sources=true

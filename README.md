@@ -57,15 +57,25 @@ only the initramfs plumbing differs. Installers provided for:
 
 ## Usage
 
+Everything is also wrapped in a `Makefile`, so `sudo make build install` and
+`make verify` work on any supported distro. The scripts are the source of truth.
+
 ### 1. Build the patched DSDT (from your own machine's tables)
 
 ```sh
-sudo ./scripts/build-dsdt.sh
-# or: pkexec ./scripts/build-dsdt.sh
+sudo ./scripts/build-dsdt.sh          # or: pkexec ./scripts/build-dsdt.sh
+sudo ./scripts/build-dsdt.sh --dry-run   # show the diff, compile nothing
 ```
 
-Produces `build/dsdt.aml` and a ready-made `build/acpi_override` cpio.
-Building from your *own* tables means it works on any BIOS ≥ FPCN24WW.
+Produces `build/dsdt.aml`, a rebuild of your firmware's `dsdt.dsl` for diffing
+(`build/dsdt-orig.dsl`), and a ready-made `build/acpi_override` cpio for the
+[manual install](docs/manual-install.md) path. Building from your *own* tables
+means it works on any BIOS ≥ FPCN24WW.
+
+The patcher refuses anything it does not recognise (unknown BIOS variant,
+`TPTY` used outside the two methods it fixes) instead of guessing, and it
+re-checks the compiled AML — not just the source — before writing output.
+Re-running it on an already-patched table changes nothing.
 
 ### 2. Install into the initramfs
 
@@ -86,18 +96,18 @@ with `limine-mkinitcpio`.
 sudo ./scripts/install-ubuntu.sh
 ```
 
-Stages the table at `/etc/acpi_override/dsdt.aml`, pre-builds a tiny
-uncompressed "early" initramfs archive (`/etc/acpi_override/acpi_override.cpio`)
-containing `kernel/firmware/acpi/dsdt.aml`, and installs a small
+Stages the table at `/etc/acpi_override/dsdt.aml` and installs a small
 `initramfs-tools` hook (`/etc/initramfs-tools/hooks/acpi_override`) that
-prepends that archive on every initramfs build via
+rebuilds a tiny uncompressed "early" initramfs archive containing
+`kernel/firmware/acpi/dsdt.aml` on every initramfs build and prepends it via
 `prepend_earlyinitramfs`. It then runs `update-initramfs -u -k all`.
 
 The kernel digs ACPI overrides out of the **raw initrd bytes before any
 decompression** (see `docs/diagnosis.md`), so staging the table into the
 leading uncompressed section is required — dropping it into the compressed
-main archive would be silently ignored. This script does exactly that, so the
-stock gzip/zstd initramfs works with no `COMPRESS` changes.
+main archive is silently ignored. Because the hook regenerates the archive from
+`/etc/acpi_override/dsdt.aml` each time, rebuilding the table can never leave a
+stale copy in the initramfs.
 
 Remove it again with:
 
@@ -105,13 +115,33 @@ Remove it again with:
 sudo ./scripts/install-ubuntu.sh --uninstall
 ```
 
-**On plain Arch with GRUB / systemd-boot:**
+**On plain Arch with GRUB / systemd-boot / UKI:**
 
 ```sh
 sudo ./scripts/install-arch.sh
 ```
 
+Arch is handled through a drop-in (`/etc/mkinitcpio.conf.d/zz-lenovo-flex3-acpi-override.conf`)
+so `/etc/mkinitcpio.conf` is never edited. All installers accept
+`--uninstall`, `--dry-run` and `--help`.
+
+**Anything else (Fedora, openSUSE, Void, …):** see
+[`docs/manual-install.md`](docs/manual-install.md). dracut has native support
+for ACPI overrides; mkinitcpio and initramfs-tools need the early-cpio trick
+described above.
+
 ### 3. Reboot and verify
+
+```sh
+sudo ./scripts/verify.sh; echo "exit=$?"
+```
+
+`verify.sh` exits **0** only when the override is live (`ACPI: Table Upgrade` in
+dmesg, loaded DSDT identical to `build/dsdt.aml`), the `i2c-MSFT0001:00` device
+exists, and the `04F3:3072` touchpad is bound. It exits **1** and names the
+failing check otherwise; missing root just skips the checks that need it.
+
+By hand:
 
 ```sh
 sudo dmesg | grep -i "table upgrade"        # ACPI: Table Upgrade: override [DSDT-...]
@@ -119,9 +149,9 @@ ls /sys/bus/i2c/devices/ | grep -i msft     # i2c-MSFT0001:00
 grep -A4 "MSFT0001" /proc/bus/input/devices # MSFT0001:00 04F3:3072 Touchpad
 ```
 
-or run `./scripts/verify.sh`. To confirm the table actually made it into the
-initramfs, check a Mint/Ubuntu image with `lsinitramfs /boot/initrd.img-$(uname -r) | grep acpi`
-(Omarchy/Arch: `unmkinitramfs ... | grep acpi`, or inspect the UKI).
+To confirm the table actually made it into the initramfs, check a Mint/Ubuntu
+image with `lsinitramfs /boot/initrd.img-$(uname -r) | grep acpi`
+(Omarchy/Arch: `lsinitcpio ...` or inspect the UKI).
 
 ## Clickpad behavior & recommended config
 
@@ -138,21 +168,32 @@ configuration that makes all of this behave.
 
 ## Troubleshooting / revert
 
-If the machine hangs at boot after installing, remove the override and rebuild:
+If the machine hangs at boot after installing, remove the override and rebuild.
+The installers can undo themselves:
+
+```sh
+# Arch / Omarchy
+sudo ./scripts/install-arch.sh --uninstall
+sudo ./scripts/install-omarchy.sh --uninstall     # Omarchy
+
+# Linux Mint / Ubuntu / Debian
+sudo ./scripts/install-ubuntu.sh --uninstall
+```
+
+If the scripts are gone, do it by hand:
 
 ```sh
 # Arch / Omarchy
 sudo rm /etc/initcpio/acpi_override/dsdt.aml
-sudo rm /etc/mkinitcpio.conf.d/omarchy_zz_acpi_override.conf
+sudo rm /etc/mkinitcpio.conf.d/zz-lenovo-flex3-acpi-override.conf   # plain Arch
+sudo rm /etc/mkinitcpio.conf.d/omarchy_zz_acpi_override.conf        # Omarchy
 sudo mkinitcpio -P                          # Arch
 sudo limine-mkinitcpio                      # Omarchy
 
 # Linux Mint / Ubuntu / Debian
-sudo ./scripts/install-ubuntu.sh --uninstall
-# ...or manually:
-# sudo rm /etc/initramfs-tools/hooks/acpi_override
-# sudo rm -r /etc/acpi_override
-# sudo update-initramfs -u
+sudo rm /etc/initramfs-tools/hooks/acpi_override
+sudo rm -r /etc/acpi_override
+sudo update-initramfs -u
 ```
 
 The override only swaps the ACPI table in RAM — it writes nothing to firmware,
@@ -166,6 +207,18 @@ so a full revert is always possible.
   limine UKIs**, documented the clickpad quirks, and condensed everything into
   `build -> install -> verify` scripts.
 
+## Development
+
+- `make test` — offline tests for the DSDT patcher (synthetic table fixtures, no
+  hardware and no firmware dumps involved)
+- `make lint` — shellcheck on every script plus a Python syntax check
+- `make` — `build`, `install`, `verify`, `uninstall`, `clean` helpers; see
+  `make help`
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
+
 ## Vibecoded
 
 This repo was vibecoded with [opencode](https://opencode.ai) and **Big Pickle**
@@ -173,13 +226,29 @@ on a live machine, by pressing buttons and watching the lights. It works — the
 trackpad that wrote this sentence is real. Readme also generated with opencode.
 
 (human)
-> took around 45 mintues with a nice fat prompt. a lot of the debugging was done before hand by me (not included in the time), the actual human. I just fed it the problems and how I assumed it should be fixed, and I told it to make a github > > repo for me. I will mark the human made things in this repo with "(human)." 
+> took around 45 minutes with a nice fat prompt. a lot of the debugging was done
+> beforehand by me (not included in the time), the actual human. I just fed it
+> the problems and how I assumed it should be fixed, and I told it to make a
+> GitHub repo for me. I will mark the human-made things in this repo with
+> "(human)."
 
 ## Notes
 
 (human)
-> Will update for other distros eventually. make an issue or something i guess if you have a problem
-_(Edit: Linux Mint / Ubuntu / Debian support landed 2026-09-20 — see the installers above.)_
-_(Edit: Tested on linux mint/ubuntu on another laptop of the same model i have. it semi worked, but I had to do some shennanigans to get it functional)_
+> Will update for other distros eventually. make an issue or something i guess
+> if you have a problem
 
->_(Edit 2026-09-23: `install-ubuntu.sh` was rewritten so the DSDT is staged into the initramfs' leading **uncompressed** section via `prepend_earlyinitramfs` — the kernel reads ACPI overrides out of the raw initrd bytes before decompression, so the old `$DESTDIR` staging was invisible in the default gzip/zstd image. This rewrite is reasoned from the kernel/initramfs-tools sources and exercised in a simulated build, but has **not yet been run on a real Ubuntu/Mint box** — if you test it, please report back here.)_
+_(Edit 2026-09-20: Linux Mint / Ubuntu / Debian support landed — see the
+installers above.)_
+_(Edit 2026-09-20: tested on Linux Mint/Ubuntu on another laptop of the same
+model. It semi-worked; I had to do some shenanigans to get it functional.)_
+
+> _(Edit 2026-09-23: `install-ubuntu.sh` was rewritten so the DSDT reaches the
+> initramfs' leading **uncompressed** section via `prepend_earlyinitramfs` — the
+> kernel reads ACPI overrides out of the raw initrd bytes before decompression,
+> so the old `$DESTDIR` staging was invisible in the default gzip/zstd image.)_
+>
+> _(Edit: that rewrite now regenerates the early archive from
+> `/etc/acpi_override/dsdt.aml` on every initramfs build, so a rebuilt table can
+> no longer be shadowed by a stale archive. Still **not yet exercised on real
+> Mint/Ubuntu hardware** — if you test it, please report back.)_

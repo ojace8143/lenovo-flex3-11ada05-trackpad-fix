@@ -6,135 +6,136 @@
 # so the table MUST live in the leading, uncompressed cpio of the initramfs.
 # initramfs-tools builds that leading section - the "early initramfs", see
 # prepend_earlyinitramfs in initramfs-tools(7) - and appends the compressed
-# main archive after it. This installer stages a tiny early cpio holding
-# kernel/firmware/acpi/dsdt.aml and prepends it via a small hook, so the fix
-# works with the stock gzip/zstd initrd and no COMPRESS change is needed.
+# main archive after it.
+#
+# scripts/hooks/initramfs-tools-acpi_override is installed as an
+# initramfs-tools hook; it rebuilds a tiny early cpio from
+# /etc/acpi_override/dsdt.aml on every initramfs build and prepends it. That
+# means the fix keeps working with the stock gzip/zstd initrd, needs no
+# COMPRESS change, and can never go stale after you rebuild the table.
 #
 # Usage:
-#   sudo ./scripts/install-ubuntu.sh          # install the override
-#   sudo ./scripts/install-ubuntu.sh --uninstall   # remove it again
+#   sudo ./scripts/install-ubuntu.sh              # install the override
+#   sudo ./scripts/install-ubuntu.sh --uninstall  # remove it again
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=SCRIPTDIR/lib/common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+
+REPO="$(repo_root)"
 AML="$REPO/build/dsdt.aml"
-SRC=/etc/acpi_override
-HOOK=/etc/initramfs-tools/hooks/acpi_override
-EARLY="$SRC/acpi_override.cpio"
+SRC_DIR="/etc/acpi_override"
+STAGED_AML="$SRC_DIR/dsdt.aml"
+HOOK_DST="/etc/initramfs-tools/hooks/acpi_override"
+HOOK_SRC="$REPO/scripts/hooks/initramfs-tools-acpi_override"
+LEGACY_CPIO="$SRC_DIR/acpi_override.cpio"
 
-die() { echo "error: $*" >&2; exit 1; }
+usage() {
+    cat <<'EOF'
+Install (or remove) the patched DSDT on Linux Mint / Ubuntu / Debian.
 
-[ "$EUID" -eq 0 ] || { echo "run as root:  sudo $0 [--uninstall]" >&2; exit 1; }
+Usage:
+  sudo ./scripts/install-ubuntu.sh [options]
 
-case "${1:-}" in
-    --uninstall|-u)
-        # Does not need ./build/dsdt.aml or even initramfs-tools to still be
-        # present; just clean up what the installer laid down.
-        echo "==> removing hook and staged files"
-        rm -f "$HOOK" "$EARLY" "$SRC/dsdt.aml"
-        rmdir "$SRC" 2>/dev/null || true
-        if command -v update-initramfs >/dev/null 2>&1; then
-            echo "==> rebuilding initramfs"
-            update-initramfs -u -k all || update-initramfs -u
-        fi
-        cat <<EOF
+Options:
+  -u, --uninstall   remove the hook and the staged table, rebuild initramfs
+  -n, --dry-run     show what would happen, change nothing
+  -h, --help        show this help
 
-done. The DSDT override was removed and update-initramfs was run.
-The kernel only maps the override in RAM, so nothing else to undo.
+Run ./scripts/build-dsdt.sh first (it writes build/dsdt.aml).
+Needs: initramfs-tools, cpio, update-initramfs.
 EOF
-        exit 0
-        ;;
-    "") ;;
-    *) die "unknown argument '${1}' (usage: $0 [--uninstall])" ;;
-esac
-
-echo "==> preconditions"
-[ -f "$AML" ] || die "no $AML - run './scripts/build-dsdt.sh' first (needs 'acpica-tools': sudo apt install acpica-tools)"
-command -v update-initramfs >/dev/null 2>&1 || die "update-initramfs not found - is this Ubuntu/Mint/Debian with initramfs-tools?"
-command -v cpio >/dev/null 2>&1 || die "cpio not found - required to build the early initramfs archive (initramfs-tools depends on it)"
-
-# The kernel ignores ACPI table overrides under Secure Boot / lockdown.
-if command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -qi enabled; then
-    die "Secure Boot is ENABLED - the kernel refuses ACPI overrides in this state.
-         Disable Secure Boot in the BIOS (firmware setup) and delete any pending MOK
-         enrollments, then retry."
-fi
-if [ -r /sys/kernel/security/lockdown ] && ! grep -q "\[none\]" /sys/kernel/security/lockdown; then
-    die "kernel lockdown is active ($(tr '\n' ' ' < /sys/kernel/security/lockdown)) - overrides blocked."
-fi
-
-# Kernel must have been built with CONFIG_ACPI_TABLE_UPGRADE=y.
-CFG="/boot/config-$(uname -r)"
-[ -f "$CFG" ] || CFG="/lib/modules/$(uname -r)/config"
-if [ -f "$CFG" ] && ! grep -q "^CONFIG_ACPI_TABLE_UPGRADE=y" "$CFG"; then
-    echo "WARN: $CFG does not enable CONFIG_ACPI_TABLE_UPGRADE=y - the override may be ignored."
-fi
-echo "    Secure Boot/lockdown OK"
-
-echo "==> staging table at $SRC/dsdt.aml"
-install -d "$SRC"
-install -m 0644 "$AML" "$SRC/dsdt.aml"
-
-echo "==> building early initramfs archive $EARLY"
-TMP="$(mktemp -d)"
-mkdir -p "$TMP/kernel/firmware/acpi"
-cp -p "$SRC/dsdt.aml" "$TMP/kernel/firmware/acpi/dsdt.aml"
-( cd "$TMP" && find kernel | cpio -o -H newc --quiet ) > "$EARLY"
-rm -rf "$TMP"
-chmod 0644 "$EARLY"
-
-echo "==> installing initramfs-tools hook"
-cat > "$HOOK" <<'EOS'
-#!/bin/sh
-# Stage the patched DSDT into the initramfs' EARLY (uncompressed) section so
-# the kernel's ACPI table override can find it (docs/diagnosis.md). The kernel
-# scans the raw initrd with find_cpio_data() before decompression runs, so a
-# file that lands inside the compressed main archive would be invisible.
-# Installed by install-ubuntu.sh (sudo ./scripts/install-ubuntu.sh).
-PREREQ=""
-prereqs() {
-    echo "$PREREQ"
 }
-case $1 in
-    prereqs)
-        prereqs
-        exit 0
-        ;;
-esac
 
-SRC=/etc/acpi_override
-[ -f "$SRC/dsdt.aml" ] && [ -s "$SRC/acpi_override.cpio" ] || exit 0
-
-. /usr/share/initramfs-tools/hook-functions
-
-# Same mechanism initramfs-tools documents for firmware/microcode preimages
-# (initramfs-tools(7), "Including a system firmware preimage").
-if command -v prepend_earlyinitramfs >/dev/null 2>&1; then
-    prepend_earlyinitramfs "$SRC/acpi_override.cpio"
-else
-    echo "W: initramfs-tools too old for prepend_earlyinitramfs; staging DSDT" >&2
-    echo "W: into the main archive instead. If that archive is compressed the" >&2
-    echo "W: kernel will NOT see the override - prefer COMPRESS-free setup." >&2
-    mkdir -p "$DESTDIR/kernel/firmware/acpi"
-    cat "$SRC/dsdt.aml" > "$DESTDIR/kernel/firmware/acpi/dsdt.aml"
+parse_args "unh" "$@"
+if [ "$OPT_HELP" -eq 1 ]; then
+    usage
+    exit 0
 fi
-exit 0
-EOS
-chmod 0755 "$HOOK"
 
-echo "==> rebuilding initramfs (update-initramfs -u -k all)"
+# --- uninstall --------------------------------------------------------------
+if [ "$OPT_UNINSTALL" -eq 1 ]; then
+    require_root
+    info "removing the override"
+    if [ "$OPT_DRY_RUN" -eq 1 ]; then
+        echo "    would remove $HOOK_DST, $STAGED_AML and $LEGACY_CPIO"
+        echo "    would run: update-initramfs -u -k all"
+        exit 0
+    fi
+    rm -f "$HOOK_DST" "$STAGED_AML" "$LEGACY_CPIO"
+    rmdir "$SRC_DIR" 2>/dev/null || true
+
+    if command -v update-initramfs >/dev/null 2>&1; then
+        info "rebuilding initramfs"
+        if ! update-initramfs -u -k all; then
+            warn "'update-initramfs -u -k all' failed - retrying for $(uname -r) only"
+            update-initramfs -u -k "$(uname -r)" \
+                || die "initramfs rebuild failed; the override is already removed, but
+     rebuild manually: sudo update-initramfs -u -k \$(uname -r)"
+        fi
+    else
+        warn "update-initramfs not found - rebuild your initramfs before rebooting"
+    fi
+
+    echo
+    echo "done. The DSDT override was removed; reboot to return to the firmware table."
+    exit 0
+fi
+
+# --- install ----------------------------------------------------------------
+require_root
+info "checking preconditions"
+[ -f "$AML" ] || die "no $AML - run './scripts/build-dsdt.sh' first (needs 'acpica-tools')"
+need update-initramfs "is this Ubuntu/Mint/Debian with initramfs-tools?"
+need cpio "initramfs-tools normally depends on it"
+[ -f "$HOOK_SRC" ] || die "missing $HOOK_SRC (incomplete checkout?)"
+[ -d /etc/initramfs-tools ] || die "/etc/initramfs-tools not found - not an initramfs-tools system"
+
+check_acpi_override_preconditions
+echo "    no blocking Secure Boot / lockdown state found"
+
+if [ "$OPT_DRY_RUN" -eq 1 ]; then
+    echo "    would install $AML -> $STAGED_AML"
+    echo "    would install $HOOK_SRC -> $HOOK_DST"
+    echo "    would run: update-initramfs -u -k all"
+    exit 0
+fi
+
+info "staging the table at $STAGED_AML"
+install -d "$SRC_DIR"
+install -m 0644 "$AML" "$STAGED_AML"
+# Older versions of this installer pre-built this archive; the hook now builds
+# it fresh on every run, so a stale copy must not be left behind.
+rm -f "$LEGACY_CPIO"
+
+info "installing the initramfs-tools hook"
+install -d "$(dirname "$HOOK_DST")"
+install -m 0755 "$HOOK_SRC" "$HOOK_DST"
+
+info "rebuilding initramfs (update-initramfs -u -k all)"
+rebuild_rc=0
 if ! update-initramfs -u -k all; then
-    echo "WARN: 'update-initramfs -u -k all' failed - retrying for the running kernel only" >&2
-    update-initramfs -u || { echo "WARN: update-initramfs failed - build the initramfs manually:" >&2
-                             echo "      sudo update-initramfs -c -k \$(uname -r)" >&2; exit 1; }
+    warn "'update-initramfs -u -k all' failed - retrying for $(uname -r) only"
+    update-initramfs -u -k "$(uname -r)" || rebuild_rc=1
+fi
+
+info "checking the generated initramfs"
+check_initrd_for_table "/boot/initrd.img-$(uname -r)"
+
+if [ "$rebuild_rc" -ne 0 ]; then
+    die "some initramfs images could not be rebuilt. The override is staged, but only
+     the running kernel's image (if any) is guaranteed to carry it. Re-run:
+       sudo update-initramfs -u -k all"
 fi
 
 cat <<EOF
 
-done. Reboot, then check:
-  sudo dmesg | grep -i "table upgrade"
-  ls /sys/bus/i2c/devices/ | grep -i msft
-Debug (table really in the leading uncompressed initramfs?):
-  lsinitramfs /boot/initrd.img-\$(uname -r) | grep "acpi"
-Revert:
+installed:
+  table:  $STAGED_AML
+  hook:   $HOOK_DST
+
+Revert with:
   sudo $0 --uninstall
 EOF
+print_verify_steps

@@ -1,0 +1,72 @@
+#!/bin/sh
+# initramfs-tools hook: unpack the patched DSDT into the EARLY (uncompressed)
+# part of the initramfs.
+#
+# The kernel scans the raw initrd bytes with find_cpio_data() before any
+# decompression runs (drivers/acpi/tables.c), so a table that ended up inside
+# the compressed main archive would be silently ignored. prepend_earlyinitramfs
+# writes into the leading uncompressed cpio - the same mechanism initramfs-tools
+# documents for system firmware/microcode preimages.
+#
+# The archive is rebuilt from /etc/acpi_override/dsdt.aml on every build, so
+# rebuilding the table can never leave a stale copy installed here.
+#
+# Installed by scripts/install-ubuntu.sh.
+
+PREREQ=""
+
+prereqs() {
+    echo "$PREREQ"
+}
+
+case "${1:-}" in
+    prereqs)
+        prereqs
+        exit 0
+        ;;
+esac
+
+SRC=/etc/acpi_override
+AML="$SRC/dsdt.aml"
+
+if [ ! -f "$AML" ]; then
+    exit 0
+fi
+
+if [ ! -r /usr/share/initramfs-tools/hook-functions ]; then
+    echo "E: acpi_override: /usr/share/initramfs-tools/hook-functions missing" >&2
+    exit 1
+fi
+# shellcheck source=/dev/null
+. /usr/share/initramfs-tools/hook-functions
+
+if ! command -v prepend_earlyinitramfs >/dev/null 2>&1; then
+    echo "E: acpi_override: this initramfs-tools has no prepend_earlyinitramfs();" >&2
+    echo "E: acpi_override: refusing to build an initramfs that would silently" >&2
+    echo "E: acpi_override: drop the DSDT override." >&2
+    exit 1
+fi
+
+if ! command -v cpio >/dev/null 2>&1; then
+    echo "E: acpi_override: cpio not found, cannot stage the DSDT" >&2
+    exit 1
+fi
+
+signature=$(dd if="$AML" bs=1 count=4 2>/dev/null)
+if [ "$signature" != "DSDT" ]; then
+    echo "W: acpi_override: $AML does not start with the 'DSDT' signature" >&2
+    echo "W: acpi_override: the kernel will ignore it unless this is really a DSDT" >&2
+fi
+
+tmp=$(mktemp -d) || exit 1
+trap 'rm -rf "$tmp"' EXIT INT TERM HUP
+
+mkdir -p "$tmp/kernel/firmware/acpi" || exit 1
+cp "$AML" "$tmp/kernel/firmware/acpi/dsdt.aml" || exit 1
+if ! ( cd "$tmp" && find kernel -type f | cpio -o -H newc --quiet ) > "$tmp/dsdt.cpio"; then
+    echo "E: acpi_override: failed to build the early cpio archive" >&2
+    exit 1
+fi
+
+prepend_earlyinitramfs "$tmp/dsdt.cpio"
+exit 0

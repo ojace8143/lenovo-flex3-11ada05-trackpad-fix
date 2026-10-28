@@ -1,39 +1,115 @@
 #!/usr/bin/env bash
-# Install the patched DSDT on a plain Arch setup (GRUB / systemd-boot / etc.)
+# Install the patched DSDT on a plain Arch setup (mkinitcpio + GRUB,
+# systemd-boot or a UKI). Omarchy users want install-omarchy.sh instead.
+#
+# The hook is enabled through a drop-in in /etc/mkinitcpio.conf.d/ rather than
+# by editing HOOKS= in /etc/mkinitcpio.conf, so your config is never touched
+# and --uninstall is a clean one-liner.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=SCRIPTDIR/lib/common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+
+REPO="$(repo_root)"
 AML="$REPO/build/dsdt.aml"
+STAGE_DIR="/etc/initcpio/acpi_override"
+STAGE_AML="$STAGE_DIR/dsdt.aml"
+DROPIN="/etc/mkinitcpio.conf.d/zz-lenovo-flex3-acpi-override.conf"
+HOOK_LINE='HOOKS+=(acpi_override)'
+MKINITCPIO_HOOK="/usr/lib/initcpio/install/acpi_override"
 
-die() { echo "error: $*" >&2; exit 1; }
+usage() {
+    cat <<'EOF'
+Install (or remove) the patched DSDT for mkinitcpio-based Arch systems.
 
-[ "$EUID" -eq 0 ] || { echo "run as root:  sudo $0   (or: pkexec $0)"; exit 1; }
-[ -f "$AML" ] || die "no $AML - run ./scripts/build-dsdt.sh first"
+Usage:
+  sudo ./scripts/install-arch.sh [options]
 
-if command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -qi enabled; then
-    die "Secure Boot is active - disable it in the BIOS first."
-fi
-if [ -r /sys/kernel/security/lockdown ] && ! grep -q "\[none\]" /sys/kernel/security/lockdown; then
-    die "kernel lockdown is active - ACPI table overrides are blocked."
-fi
+Options:
+  -u, --uninstall   remove the override and rebuild the initramfs
+  -n, --dry-run     show what would happen, change nothing
+  -h, --help        show this help
 
-install -d /etc/initcpio/acpi_override
-install -m 0644 "$AML" /etc/initcpio/acpi_override/dsdt.aml
-echo "==> installed /etc/initcpio/acpi_override/dsdt.aml"
-
-if ! grep -q "^HOOKS=.*acpi_override" /etc/mkinitcpio.conf; then
-    sed -i 's/^HOOKS=(/HOOKS=(acpi_override /' /etc/mkinitcpio.conf
-    echo "==> added acpi_override to HOOKS in /etc/mkinitcpio.conf"
-fi
-
-echo "==> rebuilding initramfs / UKI"
-mkinitcpio -P
-
-cat <<EOF
-
-done. Reboot, then check:
-  sudo dmesg | grep -i "table upgrade"
-  ls /sys/bus/i2c/devices/ | grep -i msft
-Revert: remove acpi_override from HOOKS and delete
-        /etc/initcpio/acpi_override/dsdt.aml, then run mkinitcpio -P
+Run ./scripts/build-dsdt.sh first (it writes build/dsdt.aml).
 EOF
+}
+
+rebuild_initramfs() {
+    info "rebuilding initramfs / UKI (mkinitcpio -P)"
+    mkinitcpio -P
+}
+
+report_installed() {
+    echo
+    echo "installed:"
+    echo "  table:  $STAGE_AML"
+    echo "  hook:   $HOOK_LINE in $DROPIN"
+}
+
+parse_args "unh" "$@"
+if [ "$OPT_HELP" -eq 1 ]; then
+    usage
+    exit 0
+fi
+
+if [ "$OPT_UNINSTALL" -eq 1 ]; then
+    require_root
+    info "removing the ACPI override"
+    if [ "$OPT_DRY_RUN" -eq 1 ]; then
+        echo "    would remove $STAGE_AML and $DROPIN"
+        echo "    would run: mkinitcpio -P"
+        exit 0
+    fi
+    remove_dropin "$DROPIN" "$HOOK_LINE"
+    rm -f "$STAGE_AML"
+    rmdir "$STAGE_DIR" 2>/dev/null || true
+    if grep -qE '^[[:space:]]*HOOKS=.*\bacpi_override\b' /etc/mkinitcpio.conf 2>/dev/null; then
+        warn "acpi_override is still listed in HOOKS in /etc/mkinitcpio.conf (left over
+     from an older install). It is harmless now that the table is gone, but you
+     can delete the word from that line."
+    fi
+    rebuild_initramfs
+    echo
+    echo "done. The override is gone; reboot to return to the firmware table."
+    exit 0
+fi
+
+require_root
+need mkinitcpio "pacman -S mkinitcpio"
+[ -f "$AML" ] || die "no $AML - run './scripts/build-dsdt.sh' first"
+if [ ! -f "$MKINITCPIO_HOOK" ]; then
+    die "this mkinitcpio has no 'acpi_override' hook ($MKINITCPIO_HOOK is missing).
+     Update mkinitcpio (pacman -Syu mkinitcpio), or use the manual cpio method in
+     docs/manual-install.md."
+fi
+
+info "checking preconditions"
+check_acpi_override_preconditions
+echo "    no blocking Secure Boot / lockdown state found"
+
+if [ "$OPT_DRY_RUN" -eq 1 ]; then
+    echo "    would install $AML -> $STAGE_AML"
+    echo "    would add '$HOOK_LINE' to $DROPIN"
+    echo "    would run: mkinitcpio -P"
+    exit 0
+fi
+
+info "staging the table"
+install -d "$STAGE_DIR"
+install -m 0644 "$AML" "$STAGE_AML"
+
+info "enabling the acpi_override hook"
+ensure_dropin "$DROPIN" "$HOOK_LINE"
+if grep -qE '^[[:space:]]*HOOKS=.*\bacpi_override\b' /etc/mkinitcpio.conf 2>/dev/null; then
+    warn "acpi_override is also listed in HOOKS in /etc/mkinitcpio.conf - that is
+     redundant but harmless; drop-in removal on --uninstall does not touch it."
+fi
+
+rebuild_initramfs
+report_installed
+
+info "checking the generated initramfs"
+check_initrd_for_table "/boot/initramfs-$(uname -r).img"
+
+print_verify_steps

@@ -51,9 +51,11 @@ Linux supports overriding firmware tables with files placed at
 3. at boot the kernel maps the override for the DSDT signature, replaces the
    table, then proceeds with normal ACPI init.
 
-mkinitcpio (>= 39) ships a built-in `acpi_override` install hook that stages
-every `*.aml` in `/etc/initcpio/acpi_override/` into the **early uncompressed
-cpio** of the initramfs / UKI.
+mkinitcpio ships a built-in `acpi_override` install hook (present in modern
+releases at `/usr/lib/initcpio/install/acpi_override`) that stages every
+`*.aml` in `/etc/initcpio/acpi_override/` into the **early uncompressed cpio**
+of the initramfs / UKI. `scripts/install-arch.sh` verifies the hook is present
+before touching any configuration and refuses to continue if it is not.
 
 The kernel reads the override out of the **raw initrd bytes** with
 `find_cpio_data()` (`drivers/acpi/tables.c`, `acpi_table_upgrade()`) **before
@@ -61,12 +63,14 @@ the initramfs is decompressed**, so the table must sit in the leading
 *uncompressed* cpio. Ubuntu-family systems (Linux Mint/Debian) build their
 initramfs with **initramfs-tools**, which concatenates a leading uncompressed
 "early" section (the same one used for firmware/microcode) ahead of the
-compressed main archive. `scripts/install-ubuntu.sh` installs a hook into
-`/etc/initramfs-tools/hooks/` that prepends a tiny early cpio holding
-`kernel/firmware/acpi/dsdt.aml` via `prepend_earlyinitramfs()` — the API
-documented in `initramfs-tools(7)` for system firmware preimages — so the end
-result is identical to the mkinitcpio early-cpio layout, with the stock
-gzip/zstd initramfs and no `COMPRESS` changes.
+compressed main archive. `scripts/install-ubuntu.sh` installs
+`scripts/hooks/initramfs-tools-acpi_override` into
+`/etc/initramfs-tools/hooks/`; that hook rebuilds a tiny early cpio holding
+`kernel/firmware/acpi/dsdt.aml` from `/etc/acpi_override/dsdt.aml` on every
+build and prepends it via `prepend_earlyinitramfs()` — the API documented in
+`initramfs-tools(7)` for system firmware preimages — so the end result is
+identical to the mkinitcpio early-cpio layout, with the stock gzip/zstd
+initramfs and no `COMPRESS` changes.
 
 ## Why not just downgrade the BIOS?
 

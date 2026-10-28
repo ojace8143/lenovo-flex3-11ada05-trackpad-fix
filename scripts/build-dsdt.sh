@@ -1,161 +1,153 @@
 #!/usr/bin/env bash
 # Build a patched DSDT from THIS machine's own ACPI tables.
-# Output: build/dsdt.aml (+ build/acpi_override, a ready-made initrd cpio)
+# Output: build/dsdt.aml (+ build/acpi_override, a manual-fallback initrd cpio)
 #
-# Patch: IdeaPad Flex 3 11ADA05 touchpad TPD0 (_CRS / _DSM) — remove the
+# Patch: IdeaPad Flex 3 11ADA05 touchpad TPD0 (_CRS / _DSM) - remove the
 # embedded-controller dependency that breaks the ELAN 04F3:3072 touchpad on
 # BIOS >= FPCN24WW. Bumps the DSDT OEM revision so the kernel applies it.
 set -euo pipefail
 
-BUILD="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/build"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=SCRIPTDIR/lib/common.sh
+. "$SCRIPT_DIR/lib/common.sh"
 
-die() { echo "error: $*" >&2; exit 1; }
-need() { command -v "$1" >/dev/null 2>&1 || die "'$1' missing (Debian/Ubuntu/Mint: sudo apt install acpica-tools | Arch/Omarchy: sudo pacman -S acpica)"; }
+REPO="$(repo_root)"
+BUILD_DIR="${BUILD_DIR:-$REPO/build}"
+PATCHER="$SCRIPT_DIR/patch-dsdt.py"
+MARKER=".managed-by-build-dsdt"
 
-for t in iasl acpidump python3; do need "$t"; done
-[ "$EUID" -eq 0 ] || { echo "run as root:  sudo $0   (or: pkexec $0)"; exit 1; }
+usage() {
+    cat <<'EOF'
+Build a patched DSDT from this machine's firmware tables.
 
-rm -rf "$BUILD"; mkdir -p "$BUILD/tables"
-cd "$BUILD/tables"
+Usage:
+  sudo ./scripts/build-dsdt.sh [options]
 
-echo "==> dumping ACPI tables (acpidump -b)"
-acpidump -b >/dev/null 2>&1
+Options:
+  -n, --dry-run   dump + decompile + patch, show the diff, stop before compiling
+  -h, --help      show this help
+
+Environment:
+  BUILD_DIR       output directory (default: <repo>/build)
+
+Requires root (acpidump reads firmware tables) and:
+  acpidump, iasl (package: acpica / acpica-tools / acpica-utils),
+  python3, cpio.
+EOF
+}
+
+parse_args "nh" "$@"
+if [ "$OPT_HELP" -eq 1 ]; then
+    usage
+    exit 0
+fi
+
+pkg_hint() {
+    case "$(detect_distro)" in
+        arch)   echo "pacman -S acpica python3 cpio" ;;
+        debian) echo "apt install acpica-tools python3 cpio" ;;
+        void)   echo "xbps-install -S acpica-utils python3 cpio" ;;
+        *)      echo "install your distro's acpica/python3/cpio packages" ;;
+    esac
+}
+
+require_root
+for tool in acpidump iasl python3 cpio; do
+    need "$tool" "$(pkg_hint)"
+done
+
+# Refuse to nuke a directory we did not create.
+if [ -d "$BUILD_DIR" ] && [ -n "$(ls -A "$BUILD_DIR" 2>/dev/null)" ] \
+    && [ ! -e "$BUILD_DIR/$MARKER" ]; then
+    die "$BUILD_DIR exists and was not created by this script.
+     Remove it yourself, or set BUILD_DIR=/some/other/directory."
+fi
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR/tables"
+: > "$BUILD_DIR/$MARKER"
+
+model="$(cat /sys/devices/virtual/dmi/id/product_name 2>/dev/null || true)"
+case "$model" in
+    ""|*Flex*3*|*82G4*) ;;
+    *) warn "this machine reports '$model' - not an IdeaPad Flex 3 11ADA05; continuing anyway" ;;
+esac
+
+cd "$BUILD_DIR/tables"
+
+info "dumping ACPI tables (acpidump -b)"
+acpidump -b >/dev/null 2>&1 || die "acpidump failed - are you root?"
 [ -f dsdt.dat ] || die "acpidump produced no dsdt.dat"
 
-echo "==> decompiling DSDT (SSDTs as externals)"
-iasl -e ssdt*.dat -d dsdt.dat >/dev/null 2>&1 || true
-[ -f dsdt.dsl ] || die "decompilation failed"
-cp dsdt.dsl "$BUILD/dsdt-orig.dsl"
+info "decompiling DSDT (using SSDTs as externals where present)"
+shopt -s nullglob
+ssdts=(ssdt*.dat)
+shopt -u nullglob
+if [ "${#ssdts[@]}" -gt 0 ]; then
+    iasl -e "${ssdts[@]}" -d dsdt.dat >/dev/null 2>&1 \
+        || warn "iasl reported problems while resolving SSDT externals - continuing"
+else
+    iasl -d dsdt.dat >/dev/null 2>&1 \
+        || warn "iasl reported problems while decompiling - continuing"
+fi
+[ -f dsdt.dsl ] || die "iasl produced no dsdt.dsl (decompilation failed)"
+cp dsdt.dsl "$BUILD_DIR/dsdt-orig.dsl"
 
-echo "==> patching TPD0 (_CRS/_DSM, EC-independent)"
-python3 - "$BUILD/tables/dsdt.dsl" <<'PY'
-import re, sys
+info "patching TPD0 (_CRS/_DSM, EC-independent)"
+if [ "$OPT_DRY_RUN" -eq 1 ]; then
+    python3 "$PATCHER" --diff dsdt.dsl | tee "$BUILD_DIR/dsdt.patch"
+    echo
+    echo "dry run: $BUILD_DIR/dsdt.patch holds the proposed change; nothing compiled."
+    exit 0
+fi
+python3 "$PATCHER" dsdt.dsl
 
-path = sys.argv[1]
-src  = open(path, encoding="utf-8", errors="surrogateescape").read()
-
-start = src.find("        Device (TPD0)")
-if start < 0:
-    sys.exit("error: 'Device (TPD0)' not found in DSDT")
-
-i, depth, end = src.index("{", start), 0, -1
-while i < len(src):
-    if src[i] == "{":
-        depth += 1
-    elif src[i] == "}":
-        depth -= 1
-        if depth == 0:
-            end = i + 1
-            break
-    i += 1
-if end < 0:
-    sys.exit("error: TPD0 block not closed (bad decompilation?)")
-
-block = src[start:end]
-
-old_dsm = r"""                        Case (0x01)
-                        {
-                            If ((^^^PCI0.LPC0.H_EC.ECRD (RefOf (^^^PCI0.LPC0.H_EC.TPTY)) == 0x01))
-                            {
-                                Return (0x01)
-                            }
-
-                            If ((^^^PCI0.LPC0.H_EC.ECRD (RefOf (^^^PCI0.LPC0.H_EC.TPTY)) == 0x02))
-                            {
-                                Return (0x20)
-                            }
-                        }"""
-new_dsm = r"""                        Case (0x01)
-                        {
-                            Return (0x01)
-                        }"""
-
-old_crs = r"""                If ((^^^PCI0.LPC0.H_EC.ECRD (RefOf (^^^PCI0.LPC0.H_EC.TPTY)) == 0x01))
-                {
-                    Name (SBFB, ResourceTemplate ()
-                    {
-                        I2cSerialBusV2 (0x0015, ControllerInitiated, 0x00061A80,
-                            AddressingMode7Bit, "\\_SB.I2CD",
-                            0x00, ResourceConsumer, , Exclusive,
-                            )
-                    })
-                    Return (ConcatenateResTemplate (SBFB, SBFG))
-                }
-
-                If ((^^^PCI0.LPC0.H_EC.ECRD (RefOf (^^^PCI0.LPC0.H_EC.TPTY)) == 0x02))
-                {
-                    Name (SBFC, ResourceTemplate ()
-                    {
-                        I2cSerialBusV2 (0x002C, ControllerInitiated, 0x00061A80,
-                            AddressingMode7Bit, "\\_SB.I2CD",
-                            0x00, ResourceConsumer, , Exclusive,
-                            )
-                    })
-                    Return (ConcatenateResTemplate (SBFC, SBFG))
-                }"""
-new_crs = r"""                Name (SBFB, ResourceTemplate ()
-                {
-                    I2cSerialBusV2 (0x0015, ControllerInitiated, 0x00061A80,
-                        AddressingMode7Bit, "\\_SB.I2CD",
-                        0x00, ResourceConsumer, , Exclusive,
-                        )
-                })
-                Return (ConcatenateResTemplate (SBFB, SBFG))"""
-
-if "TPTY" in block:
-    for name, old, new in (("_DSM", old_dsm, new_dsm), ("_CRS", old_crs, new_crs)):
-        n = block.count(old)
-        if n != 1:
-            sys.exit(f"error: {name} pattern found {n}x in TPD0 (expected 1). "
-                     f"Different BIOS variant? Patch manually.")
-        block = block.replace(old, new)
-        print(f"    {name} patched")
-
-    if "TPTY" in block:
-        sys.exit("error: TPD0 still contains TPTY after patching")
-else:
-    # Already patched (override active and acpidump returned the patched table).
-    if "I2cSerialBusV2 (0x0015" not in block:
-        sys.exit("error: TPD0 has no EC dependency and no 0x15 I2C resource "
-                 "- unknown BIOS variant.")
-    print("    TPD0 already patched (override active) - used as-is")
-
-src = src[:start] + block + src[end:]
-
-m = re.search(r'(DefinitionBlock \("", "DSDT", \d+, "[^"]*", "[^"]*", )(0x[0-9A-Fa-f]+)(\))', src)
-if not m:
-    sys.exit("error: DefinitionBlock line not found")
-old_rev = int(m.group(2), 16)
-new_rev = old_rev + 0x1000
-src = src[:m.start()] + m.group(1) + f"0x{new_rev:08X}" + m.group(3) + src[m.end():]
-print(f"    OEM revision 0x{old_rev:08X} -> 0x{new_rev:08X}")
-
-open(path, "w", encoding="utf-8", errors="surrogateescape").write(src)
-PY
-
-echo "==> compiling"
-LOG="$(iasl -tc dsdt.dsl 2>&1)" || die "compile failed"
-echo "$LOG" | grep -E "Compilation successful|Error" || true
-echo "$LOG" | grep -q "0 Errors" || die "compile reported errors"
+info "compiling"
+LOG="$BUILD_DIR/iasl.log"
+if ! iasl -tc dsdt.dsl >"$LOG" 2>&1; then
+    grep -E 'Error|error' "$LOG" >&2 || cat "$LOG" >&2
+    die "iasl failed to compile the patched DSDT (full log: $LOG)"
+fi
+grep -E 'Compilation (successful|complete)' "$LOG" || true
+if ! grep -q '0 Errors' "$LOG"; then
+    cat "$LOG" >&2
+    die "iasl reported errors (full log: $LOG)"
+fi
 [ -f dsdt.aml ] || die "no dsdt.aml produced"
 
-echo "==> sanity check (verify loop)"
-mkdir -p "$BUILD/verify"
-cp dsdt.aml "$BUILD/verify/"
-( cd "$BUILD/verify" && iasl -d dsdt.aml >/dev/null 2>&1 )
-if sed -n '/Device (TPD0)/,/^        }$/p' "$BUILD/verify/dsdt.dsl" | grep -q TPTY; then
-    die "TPD0 still references TPTY - patch incomplete"
+info "verifying the compiled AML (not just the source)"
+mkdir -p "$BUILD_DIR/verify"
+cp dsdt.aml "$BUILD_DIR/verify/"
+if ! ( cd "$BUILD_DIR/verify" && iasl -d dsdt.aml >/dev/null 2>&1 ); then
+    die "could not disassemble the built dsdt.aml - refusing to install an unverified table"
 fi
-echo "    OK: no EC dependency left in TPD0"
+[ -f "$BUILD_DIR/verify/dsdt.dsl" ] || die "disassembly produced no dsdt.dsl"
+python3 "$PATCHER" --verify-only "$BUILD_DIR/verify/dsdt.dsl"
 
-echo "==> building initrd cpio"
-mkdir -p "$BUILD/cpio/kernel/firmware/acpi"
-cp dsdt.aml "$BUILD/cpio/kernel/firmware/acpi/dsdt.aml"
-( cd "$BUILD/cpio" && find kernel | cpio -H newc --create 2>/dev/null ) > "$BUILD/acpi_override"
+info "building the manual-fallback initrd cpio"
+mkdir -p "$BUILD_DIR/cpio/kernel/firmware/acpi"
+cp dsdt.aml "$BUILD_DIR/cpio/kernel/firmware/acpi/dsdt.aml"
+( cd "$BUILD_DIR/cpio" && find kernel -type f | cpio -o -H newc --quiet ) \
+    > "$BUILD_DIR/acpi_override"
+chmod 0644 "$BUILD_DIR/dsdt.aml" "$BUILD_DIR/acpi_override"
+
+# Everything above ran as root; hand the build tree back to the invoking user.
+if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+    chown -R "$(id -u "$SUDO_USER"):$(id -g "$SUDO_USER")" "$BUILD_DIR" 2>/dev/null || true
+fi
 
 echo
 echo "done:"
-echo "  $BUILD/dsdt.aml        ($(stat -c%s "$BUILD/dsdt.aml") bytes)"
-echo "  $BUILD/acpi_override   ($(stat -c%s "$BUILD/acpi_override") bytes)"
-echo
-echo "next: sudo ./scripts/install-omarchy.sh   (or install-arch.sh / install-ubuntu.sh)"
+printf '  %-40s %s bytes\n' "$BUILD_DIR/dsdt.aml" "$(stat -c%s "$BUILD_DIR/dsdt.aml")"
+printf '  %-40s %s bytes\n' "$BUILD_DIR/acpi_override" "$(stat -c%s "$BUILD_DIR/acpi_override")"
+printf '  %-40s %s\n' "$BUILD_DIR/dsdt-orig.dsl" "(your firmware's original, for diffing)"
+printf '  %-40s %s\n' "$BUILD_DIR/iasl.log" "(compiler output)"
+
+cat <<'EOF'
+
+next (pick one):
+  sudo ./scripts/install-omarchy.sh     # Omarchy / limine / UKI
+  sudo ./scripts/install-arch.sh        # plain Arch (mkinitcpio)
+  sudo ./scripts/install-ubuntu.sh      # Linux Mint / Ubuntu / Debian
+
+other distros: see docs/manual-install.md (uses build/acpi_override).
+EOF
