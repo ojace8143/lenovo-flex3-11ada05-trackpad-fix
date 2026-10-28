@@ -188,6 +188,42 @@ def case_blocks(body: str, value: int) -> list[tuple[int, int]]:
     return blocks
 
 
+def strip_comments(text: str) -> str:
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    return re.sub(r"//[^\n]*", " ", text)
+
+
+def first_arg_matches(arguments: str, value: int) -> bool:
+    """True if the first macro argument (before the first comma) is `value`."""
+    first = strip_comments(arguments.split(",", 1)[0]).strip()
+    if not first:
+        return False
+    if first in ("Zero",):
+        return value == 0
+    if first in ("One",):
+        return value == 1
+    if first in ("Ones",):
+        return value == 0xFFFFFFFF
+    try:
+        return int(first, 0) == value
+    except ValueError:
+        return False
+
+
+def has_i2c_address(body: str, address: int) -> bool:
+    """True if body has an I2C serial-bus descriptor at `address`.
+
+    iasl prints the macro as I2cSerialBusV2 or I2cSerialBus depending on the
+    descriptor length, and the address as hex or decimal, so neither the name
+    suffix nor the radix can be relied on.
+    """
+    for match in re.finditer(r"I2cSerialBus(?:V2)?\s*\(", body):
+        window = body[match.end():match.end() + 120]
+        if first_arg_matches(window, address):
+            return True
+    return False
+
+
 def find_device(text: str, name: str = "TPD0") -> Block:
     return find_block(text, rf"\bDevice\s*\(\s*{re.escape(name)}\s*\)",
                       f"'Device ({name})'")
@@ -378,9 +414,10 @@ def verify(src: str) -> list[str]:
                 f"{line_number(src, device.body_start + match.start())}")
         problems = problems[:5]
 
-    if not re.search(r"I2cSerialBusV2\s*\(\s*" + int_literal(0x15) + r"\s*,",
-                     device_body):
-        problems.append("TPD0 has no I2cSerialBusV2 resource at address 0x15")
+    if not has_i2c_address(device_body, 0x15):
+        snippet = " ".join(strip_comments(device_body).split())[:220]
+        problems.append("TPD0 has no I2cSerialBus resource at address 0x15 "
+                        f"(TPD0 contains: {snippet!r})")
 
     if not re.search(r"ConcatenateResTemplate\s*\(\s*SBFB\s*,\s*SBFG\s*\)",
                      device_body):

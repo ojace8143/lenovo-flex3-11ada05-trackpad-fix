@@ -226,6 +226,28 @@ class PatcherTest(unittest.TestCase):
         result = self.run_patcher(path, "--verify-only")
         self.assertEqual(result.returncode, EXIT_OK, result.stderr)
 
+    def test_verify_accepts_i2c_descriptor_renderings(self) -> None:
+        """iasl may print I2cSerialBus (V1 name) and/or the address in decimal."""
+        variants = [
+            "I2cSerialBus (0x0015,",
+            "I2cSerialBus (0x15,",
+            "I2cSerialBus (21,",
+            "I2cSerialBusV2 (0x15,",
+            "I2cSerialBusV2 (21,",
+        ]
+        for index, variant in enumerate(variants):
+            with self.subTest(variant=variant):
+                path = self.write(self.original, name=f"dsdt-{index}.dsl")
+                self.assertEqual(self.run_patcher(path).returncode, EXIT_OK)
+                patched = path.read_text(encoding="utf-8")
+                self.assertIn("I2cSerialBusV2 (0x0015,", patched)
+                path.write_text(
+                    patched.replace("I2cSerialBusV2 (0x0015,", variant),
+                    encoding="utf-8")
+
+                result = self.run_patcher(path, "--verify-only")
+                self.assertEqual(result.returncode, EXIT_OK, result.stderr)
+
     def test_second_run_on_iasl_style_table_changes_nothing(self) -> None:
         """Booting the override and rebuilding must not re-patch or re-bump."""
         path = self.write(self.original)

@@ -115,13 +115,18 @@ fi
 [ -f dsdt.aml ] || die "no dsdt.aml produced"
 
 info "verifying the compiled AML (not just the source)"
+cp dsdt.aml "$BUILD_DIR/dsdt.aml"
 mkdir -p "$BUILD_DIR/verify"
 cp dsdt.aml "$BUILD_DIR/verify/"
 if ! ( cd "$BUILD_DIR/verify" && iasl -d dsdt.aml >/dev/null 2>&1 ); then
     die "could not disassemble the built dsdt.aml - refusing to install an unverified table"
 fi
 [ -f "$BUILD_DIR/verify/dsdt.dsl" ] || die "disassembly produced no dsdt.dsl"
-python3 "$PATCHER" --verify-only "$BUILD_DIR/verify/dsdt.dsl"
+if ! python3 "$PATCHER" --verify-only "$BUILD_DIR/verify/dsdt.dsl"; then
+    die "the compiled AML failed verification.
+     Its disassembly is at $BUILD_DIR/verify/dsdt.dsl - inspect the TPD0 block
+     there (it is what the kernel would actually load)."
+fi
 
 info "building the manual-fallback initrd cpio"
 mkdir -p "$BUILD_DIR/cpio/kernel/firmware/acpi"
