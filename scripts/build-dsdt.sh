@@ -148,6 +148,7 @@ next (pick one):
   sudo ./scripts/install-omarchy.sh     # Omarchy / limine / UKI
   sudo ./scripts/install-arch.sh        # plain Arch (mkinitcpio)
   sudo ./scripts/install-ubuntu.sh      # Linux Mint / Ubuntu / Debian
+  sudo ./scripts/install-void.sh        # Void Linux (dracut)
 
 other distros: see docs/manual-install.md (uses build/acpi_override).
 EOF

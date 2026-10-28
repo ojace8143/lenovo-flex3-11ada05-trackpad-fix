@@ -56,7 +56,7 @@ fi
 
 # --- uninstall --------------------------------------------------------------
 if [ "$OPT_UNINSTALL" -eq 1 ]; then
-    require_root
+    [ "$OPT_DRY_RUN" -eq 1 ] || require_root
     info "removing the override"
     if [ "$OPT_DRY_RUN" -eq 1 ]; then
         echo "    would remove $HOOK_DST, $STAGED_AML and $LEGACY_CPIO"
@@ -84,7 +84,7 @@ if [ "$OPT_UNINSTALL" -eq 1 ]; then
 fi
 
 # --- install ----------------------------------------------------------------
-require_root
+[ "$OPT_DRY_RUN" -eq 1 ] || require_root
 info "checking preconditions"
 [ -f "$AML" ] || die "no $AML - run './scripts/build-dsdt.sh' first (needs 'acpica-tools')"
 need update-initramfs "is this Ubuntu/Mint/Debian with initramfs-tools?"

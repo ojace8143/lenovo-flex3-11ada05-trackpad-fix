@@ -72,6 +72,11 @@ build and prepends it via `prepend_earlyinitramfs()` — the API documented in
 identical to the mkinitcpio early-cpio layout, with the stock gzip/zstd
 initramfs and no `COMPRESS` changes.
 
+dracut (Void Linux) does the same thing natively: with `acpi_override="yes"` and
+`acpi_table_dir="/etc/dracut/acpi_override"` it builds a separate uncompressed
+cpio from every `*.aml` in that directory and glues it in front of the
+compressed image. `scripts/install-void.sh` only writes that config and rebuilds.
+
 ## Why not just downgrade the BIOS?
 
 The forum-famous fix is a BIOS downgrade to `FPCN21WW`. Downsides:

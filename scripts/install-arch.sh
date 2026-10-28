@@ -54,7 +54,7 @@ if [ "$OPT_HELP" -eq 1 ]; then
 fi
 
 if [ "$OPT_UNINSTALL" -eq 1 ]; then
-    require_root
+    [ "$OPT_DRY_RUN" -eq 1 ] || require_root
     info "removing the ACPI override"
     if [ "$OPT_DRY_RUN" -eq 1 ]; then
         echo "    would remove $STAGE_AML and $DROPIN"
@@ -75,7 +75,7 @@ if [ "$OPT_UNINSTALL" -eq 1 ]; then
     exit 0
 fi
 
-require_root
+[ "$OPT_DRY_RUN" -eq 1 ] || require_root
 need mkinitcpio "pacman -S mkinitcpio"
 [ -f "$AML" ] || die "no $AML - run './scripts/build-dsdt.sh' first"
 if [ ! -f "$MKINITCPIO_HOOK" ]; then

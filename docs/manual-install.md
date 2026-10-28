@@ -40,8 +40,10 @@ cpio concatenated ahead of the compressed image, which is exactly what the
 kernel wants. It also refuses (with a warning) if `CONFIG_ACPI_TABLE_UPGRADE`
 is missing.
 
-This is the documented path for **Void Linux** too; a dedicated
-`install-void.sh` arrives in the next step and will do exactly the above.
+On **Void Linux** this is fully automated (including `--uninstall`, `--dry-run`
+and an initramfs contents check) by
+[`scripts/install-void.sh`](../scripts/install-void.sh); the recipe above is
+what it runs, and is the manual fallback for other dracut distros.
 
 ## GRUB with a separate initrd
 

@@ -36,17 +36,21 @@ a bricked firmware — and it survives kernel updates.
 | Secure Boot | OFF (required — see below) |
 
 The mechanism is a **kernel ACPI table override**, so it is not distro-specific —
-only the initramfs plumbing differs. Installers provided for:
+only the initramfs plumbing differs. Installers are provided for Omarchy/Arch,
+Linux Mint/Ubuntu/Debian and Void Linux; anything else can follow
+[`docs/manual-install.md`](docs/manual-install.md).
 
 - **Omarchy / Arch** (mkinitcpio `acpi_override` hook, limine UKI) — `install-omarchy.sh`
 - **Linux Mint / Ubuntu / Debian** (initramfs-tools hook) — `install-ubuntu.sh`
+- **Void Linux** (dracut's native `acpi_override`) — `install-void.sh`
 
 ## Prerequisites
 
 - Root access (`sudo` or `pkexec`, depending on your setup).
-- `acpica` package (`iasl`, `acpidump`).
-  - Omarchy/Arch: `sudo pacman -S acpica`
-  - Linux Mint/Ubuntu/Debian: `sudo apt install acpica-tools`
+- `acpica` package (`iasl`, `acpidump`), plus `python3` and `cpio`.
+  - Omarchy/Arch: `sudo pacman -S acpica python3 cpio`
+  - Linux Mint/Ubuntu/Debian: `sudo apt install acpica-tools python3 cpio`
+  - Void: `sudo xbps-install -S acpica-utils python3 cpio`
 - **Secure Boot must be OFF.** The kernel refuses ACPI table overrides when
   Secure Boot or lockdown is active. Check with:
 
@@ -125,7 +129,29 @@ Arch is handled through a drop-in (`/etc/mkinitcpio.conf.d/zz-lenovo-flex3-acpi-
 so `/etc/mkinitcpio.conf` is never edited. All installers accept
 `--uninstall`, `--dry-run` and `--help`.
 
-**Anything else (Fedora, openSUSE, Void, …):** see
+**On Void Linux:**
+
+```sh
+sudo ./scripts/install-void.sh
+```
+
+Void uses `dracut`, which supports ACPI table overrides natively — no hook
+needed. The script stages the table at `/etc/dracut/acpi_override/dsdt.aml`,
+writes `/etc/dracut.conf.d/99-lenovo-flex3-acpi-override.conf`
+
+```sh
+acpi_override="yes"
+acpi_table_dir="/etc/dracut/acpi_override"
+```
+
+and runs `dracut --force --regenerate-all`. Dracut packs every `*.aml` from
+that directory into a separate uncompressed cpio placed in front of the
+compressed image, which is exactly what the kernel reads. Void's kernel
+packages rerun dracut on update, so this survives kernel upgrades with nothing
+else to maintain. Remove it with `sudo ./scripts/install-void.sh --uninstall`.
+(`sudo xbps-install -S acpica-utils python3 cpio` is what the table build needs.)
+
+**Anything else (Fedora, openSUSE, …):** see
 [`docs/manual-install.md`](docs/manual-install.md). dracut has native support
 for ACPI overrides; mkinitcpio and initramfs-tools need the early-cpio trick
 described above.
@@ -252,3 +278,9 @@ model. It semi-worked; I had to do some shenanigans to get it functional.)_
 > `/etc/acpi_override/dsdt.aml` on every initramfs build, so a rebuilt table can
 > no longer be shadowed by a stale archive. Still **not yet exercised on real
 > Mint/Ubuntu hardware** — if you test it, please report back.)_
+>
+> _(Edit 2026-10-28: Void Linux support via `scripts/install-void.sh`, using
+> dracut's native `acpi_override` instead of a custom hook. The initramfs
+> plumbing was verified with dracut 112 in a sandbox build (the table lands in
+> `kernel/firmware/acpi/dsdt.aml` inside the leading uncompressed cpio), but it
+> has **not been booted on the Flex 3 yet** — report back if it misbehaves.)_

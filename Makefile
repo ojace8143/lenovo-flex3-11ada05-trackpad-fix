@@ -40,6 +40,7 @@ install:
 	      ./scripts/install-arch.sh; \
 	    fi ;; \
 	  debian) ./scripts/install-ubuntu.sh ;; \
+	  void) ./scripts/install-void.sh ;; \
 	  *) echo "unsupported distro '$(DISTRO)' - see docs/manual-install.md" >&2; exit 1 ;; \
 	esac
 
@@ -53,6 +54,7 @@ uninstall:
 	      ./scripts/install-arch.sh --uninstall; \
 	    fi ;; \
 	  debian) ./scripts/install-ubuntu.sh --uninstall ;; \
+	  void) ./scripts/install-void.sh --uninstall ;; \
 	  *) echo "unsupported distro '$(DISTRO)' - see docs/manual-install.md" >&2; exit 1 ;; \
 	esac
 

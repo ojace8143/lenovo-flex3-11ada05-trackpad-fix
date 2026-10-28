@@ -128,35 +128,52 @@ check_acpi_override_preconditions() {
     check_kernel_config >/dev/null || true
 }
 
-# ensure_dropin FILE LINE
-#   Idempotently add LINE to FILE, creating the parent directory if needed.
-#   Never truncates an existing file: appends a marked block instead.
+# ensure_dropin FILE LINE [LINE...]
+#   Idempotently add each LINE to FILE, creating the parent directory if needed.
+#   Never truncates an existing file: appends one marked block instead.
 ensure_dropin() {
-    local file="$1" line="$2" dir
+    local file="$1"
+    shift || true
+    local dir line
     dir="$(dirname "$file")"
+
+    [ "$#" -gt 0 ] || return 0
 
     if [ ! -d "$dir" ]; then
         install -d "$dir"
     fi
 
-    if [ -e "$file" ] && grep -qxF "$line" "$file"; then
-        echo "    $line already present in $file"
+    local missing=()
+    for line in "$@"; do
+        if [ -e "$file" ] && grep -qxF "$line" "$file"; then
+            echo "    '$line' already present in $file"
+        else
+            missing+=("$line")
+        fi
+    done
+
+    if [ "${#missing[@]}" -eq 0 ]; then
         return 0
     fi
 
     if [ -e "$file" ]; then
-        printf '\n%s\n%s\n' "$DROPIN_MARKER" "$line" >> "$file"
+        printf '\n%s\n' "$DROPIN_MARKER" >> "$file"
     else
-        printf '%s\n%s\n' "$DROPIN_MARKER" "$line" > "$file"
+        printf '%s\n' "$DROPIN_MARKER" > "$file"
     fi
-    echo "    added '$line' to $file"
+    for line in "${missing[@]}"; do
+        printf '%s\n' "$line" >> "$file"
+    done
+    echo "    added to $file: ${missing[*]}"
 }
 
-# remove_dropin FILE LINE
+# remove_dropin FILE LINE [LINE...]
 #   Remove the marked block this project added, leaving anything else intact.
 #   Refuses to touch a file that does not carry DROPIN_MARKER.
 remove_dropin() {
-    local file="$1" line="$2" tmp
+    local file="$1"
+    shift || true
+    local tmp line args=()
 
     if [ ! -e "$file" ]; then
         return 0
@@ -167,15 +184,20 @@ remove_dropin() {
         return 0
     fi
 
+    args=(-e "$DROPIN_MARKER")
+    for line in "$@"; do
+        args+=(-e "$line")
+    done
+
     tmp="$(mktemp)"
-    grep -vF -e "$DROPIN_MARKER" -e "$line" "$file" > "$tmp" || true
+    grep -vxF "${args[@]}" "$file" > "$tmp" || true
 
     if [ -z "$(tr -d '[:space:]' < "$tmp")" ]; then
         rm -f "$file"
         echo "    removed $file"
     else
         cat "$tmp" > "$file"
-        echo "    removed '$line' from $file"
+        echo "    removed this project's lines from $file"
     fi
     rm -f "$tmp"
 }
@@ -197,6 +219,11 @@ initrd_contains_acpi_table() {
 
     if command -v lsinitramfs >/dev/null 2>&1; then
         if lsinitramfs "$img" 2>/dev/null | grep -q "$needle"; then return 0; fi
+        return 1
+    fi
+    if command -v lsinitrd >/dev/null 2>&1; then
+        # dracut: lists the early (uncompressed) cpio as well.
+        if lsinitrd "$img" 2>/dev/null | grep -q "$needle"; then return 0; fi
         return 1
     fi
     if command -v lsinitcpio >/dev/null 2>&1; then
