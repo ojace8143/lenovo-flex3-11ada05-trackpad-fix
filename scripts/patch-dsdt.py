@@ -101,6 +101,24 @@ DEFINITION_RE = re.compile(
 )
 
 
+def int_literal(value: int) -> str:
+    """Regex matching an ASL integer constant in every form iasl may print.
+
+    The disassembler renders small constants as keywords: `Return (0x01)` from
+    our patcher comes back as `Return (One)`, and `Zero`/`Ones` for 0/0xFFFFFFFF.
+    Resource addresses may come back in decimal. All of these mean the same
+    thing, so verification must accept all of them.
+    """
+    alternatives = [rf"0x0*{value:X}", str(value)]
+    if value == 0:
+        alternatives.append("Zero")
+    elif value == 1:
+        alternatives.append("One")
+    elif value == 0xFFFFFFFF:
+        alternatives.append("Ones")
+    return "(?:" + "|".join(alternatives) + ")"
+
+
 class PatchError(Exception):
     """The table is not something we know how to patch."""
 
@@ -293,7 +311,7 @@ def plan_dsm(device_body: str) -> tuple[tuple[int, int, str] | None, list[str]]:
     dsm = find_method_in(device_body, "_DSM")
     body = device_body[dsm.body_start + 1:dsm.end - 1]
 
-    match = re.search(r"Case\s*\(\s*0x0*1\s*\)", body)
+    match = re.search(r"Case\s*\(\s*" + int_literal(1) + r"\s*\)", body)
     if not match:
         raise PatchError("TPD0._DSM: no Case (0x01) - unsupported layout")
 
@@ -306,7 +324,7 @@ def plan_dsm(device_body: str) -> tuple[tuple[int, int, str] | None, list[str]]:
     gated = [s for s in spans if "TPTY" in case_body[s[0]:s[1]]]
 
     if not gated:
-        if re.search(r"Return\s*\(\s*0x0*1\s*\)", case_body):
+        if re.search(r"Return\s*\(\s*" + int_literal(1) + r"\s*\)", case_body):
             notes.append("_DSM: already EC-independent (left as-is)")
             return None, notes
         raise PatchError("TPD0._DSM Case (0x01) has no TPTY dependency and no "
@@ -352,7 +370,8 @@ def verify(src: str) -> list[str]:
                 f"{line_number(src, device.body_start + match.start())}")
         problems = problems[:5]
 
-    if not re.search(r"I2cSerialBusV2\s*\(\s*0x0*15\b", device_body):
+    if not re.search(r"I2cSerialBusV2\s*\(\s*" + int_literal(0x15) + r"\s*,",
+                     device_body):
         problems.append("TPD0 has no I2cSerialBusV2 resource at address 0x15")
 
     if not re.search(r"ConcatenateResTemplate\s*\(\s*SBFB\s*,\s*SBFG\s*\)",
@@ -367,16 +386,19 @@ def verify(src: str) -> list[str]:
         return problems
 
     dsm_body = device_body[dsm.body_start + 1:dsm.end - 1]
-    match = re.search(r"Case\s*\(\s*0x0*1\s*\)", dsm_body)
+    match = re.search(r"Case\s*\(\s*" + int_literal(1) + r"\s*\)", dsm_body)
     if not match:
-        problems.append("TPD0._DSM has no Case (0x01)")
+        problems.append("TPD0._DSM has no Case (0x01) / Case (One)")
     else:
         brace = open_brace_after(dsm_body, match.end())
         case_body = dsm_body[brace + 1:match_brace(dsm_body, brace)]
         if "TPTY" in case_body:
             problems.append("TPD0._DSM Case (0x01) still references TPTY")
-        if not re.search(r"Return\s*\(\s*0x0*1\s*\)", case_body):
-            problems.append("TPD0._DSM Case (0x01) does not return 0x01")
+        if not re.search(r"Return\s*\(\s*" + int_literal(1) + r"\s*\)",
+                         case_body):
+            snippet = " ".join(case_body.split())[:120]
+            problems.append("TPD0._DSM Case (0x01) does not return 0x01 "
+                            f"(its body is: {snippet!r})")
 
     return problems
 

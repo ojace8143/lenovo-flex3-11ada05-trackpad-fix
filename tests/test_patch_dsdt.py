@@ -72,6 +72,22 @@ def with_unrelated_tpty_method(text: str) -> str:
     return text.replace(anchor, method + anchor, 1)
 
 
+def to_iasl_style(text: str) -> str:
+    """Render constants the way iasl's disassembler does on a recompile.
+
+    iasl prints small integer constants as keywords (`One`, `Zero`, `Ones`) and
+    may print resource addresses in decimal. A patched table that has been
+    compiled and disassembled comes back in this form, so verification must not
+    depend on our own source spelling.
+    """
+    return (
+        text
+        .replace("Return (0x01)", "Return (One)")
+        .replace("Case (0x01)", "Case (One)")
+        .replace("I2cSerialBusV2 (0x0015,", "I2cSerialBusV2 (21,")
+    )
+
+
 class PatcherTest(unittest.TestCase):
     def setUp(self) -> None:
         self.workdir = Path(tempfile.mkdtemp(prefix="flex3-dsdt-test-"))
@@ -170,6 +186,28 @@ class PatcherTest(unittest.TestCase):
         result = self.run_patcher(path, "--verify-only")
         self.assertEqual(result.returncode, EXIT_UNSUPPORTED)
         self.assertIn("TPTY", result.stderr)
+
+    def test_verify_accepts_iasl_keyword_constants(self) -> None:
+        """Regression: iasl rewrites 0x01 as One on disassembly."""
+        path = self.write(self.original)
+        self.assertEqual(self.run_patcher(path).returncode, EXIT_OK)
+        path.write_text(to_iasl_style(path.read_text(encoding="utf-8")),
+                        encoding="utf-8")
+
+        result = self.run_patcher(path, "--verify-only")
+        self.assertEqual(result.returncode, EXIT_OK, result.stderr)
+
+    def test_second_run_on_iasl_style_table_changes_nothing(self) -> None:
+        """Booting the override and rebuilding must not re-patch or re-bump."""
+        path = self.write(self.original)
+        self.assertEqual(self.run_patcher(path).returncode, EXIT_OK)
+        styled = to_iasl_style(path.read_text(encoding="utf-8"))
+        path.write_text(styled, encoding="utf-8")
+
+        result = self.run_patcher(path)
+        self.assertEqual(result.returncode, EXIT_OK, result.stderr)
+        self.assertEqual(path.read_text(encoding="utf-8"), styled)
+        self.assertIn("already", result.stdout)
 
     @unittest.skipUnless(shutil.which("iasl"), "iasl (acpica-tools) not installed")
     def test_patched_table_compiles(self) -> None:
