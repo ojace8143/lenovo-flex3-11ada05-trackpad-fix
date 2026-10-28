@@ -401,9 +401,19 @@ def bump_oem_revision(src: str) -> tuple[str, str]:
 
 # --- verification -----------------------------------------------------------
 
-def verify(src: str) -> list[str]:
-    """Return a list of problems; empty means the table looks correct."""
+def verify(src: str, *, strict: bool = True) -> tuple[list[str], list[str]]:
+    """Check a TPD0 table.
+
+    Returns (problems, warnings). `strict=True` is used on our own patched
+    source, where the exact resource spelling is known. `strict=False` is used
+    on a disassembly of the compiled AML, where iasl may render resource
+    templates differently; there, resource-shape findings are warnings because
+    the post-reboot check is the authoritative test.
+    """
     problems: list[str] = []
+    warnings: list[str] = []
+    shape = problems if strict else warnings
+
     device = find_device(src, "TPD0")
     device_body = src[device.body_start:device.end]
 
@@ -414,21 +424,30 @@ def verify(src: str) -> list[str]:
                 f"{line_number(src, device.body_start + match.start())}")
         problems = problems[:5]
 
-    if not has_i2c_address(device_body, 0x15):
-        snippet = " ".join(strip_comments(device_body).split())[:220]
-        problems.append("TPD0 has no I2cSerialBus resource at address 0x15 "
-                        f"(TPD0 contains: {snippet!r})")
+    try:
+        crs = find_method_in(device_body, "_CRS")
+    except PatchError as exc:
+        problems.append(str(exc))
+        crs = None
 
-    if not re.search(r"ConcatenateResTemplate\s*\(\s*SBFB\s*,\s*SBFG\s*\)",
-                     device_body):
-        problems.append("TPD0._CRS does not return "
-                        "ConcatenateResTemplate (SBFB, SBFG)")
+    if crs is not None:
+        crs_body = device_body[crs.body_start + 1:crs.end - 1]
+        if not strip_comments(crs_body).strip():
+            problems.append("TPD0._CRS is empty")
+        if not has_i2c_address(crs_body, 0x15):
+            snippet = " ".join(strip_comments(crs_body).split())[:300]
+            shape.append("TPD0._CRS has no recognisable I2cSerialBus descriptor "
+                         f"at address 0x15 (it contains: {snippet!r})")
+        if not re.search(r"ConcatenateResTemplate\s*\(\s*SBFB\s*,\s*SBFG\s*\)",
+                         crs_body):
+            shape.append("TPD0._CRS does not return "
+                         "ConcatenateResTemplate (SBFB, SBFG)")
 
     try:
         dsm = find_method_in(device_body, "_DSM")
     except PatchError as exc:
         problems.append(str(exc))
-        return problems
+        return problems, warnings
 
     dsm_body = device_body[dsm.body_start + 1:dsm.end - 1]
     blocks = case_blocks(dsm_body, 1)
@@ -448,7 +467,7 @@ def verify(src: str) -> list[str]:
             problems.append("TPD0._DSM has no Case (0x01) returning 0x01 "
                             f"(case bodies found: {snippets})")
 
-    return problems
+    return problems, warnings
 
 
 # --- driver -----------------------------------------------------------------
@@ -472,7 +491,7 @@ def patch_source(src: str, *, bump_revision: bool = True
                             text))
 
     if not patches:
-        problems = verify(src)
+        problems, _ = verify(src)
         if problems:
             raise PatchError("; ".join(problems))
         return src, notes, False
@@ -485,7 +504,7 @@ def patch_source(src: str, *, bump_revision: bool = True
         patched, note = bump_oem_revision(patched)
         notes.append(note)
 
-    problems = verify(patched)
+    problems, _ = verify(patched)
     if problems:
         raise PatchError("; ".join(problems))
 
@@ -511,7 +530,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--diff", action="store_true",
                         help="print a unified diff and do not write anything")
     parser.add_argument("--verify-only", action="store_true",
-                        help="only check that FILE is already correctly patched")
+                        help="check that FILE is already correctly patched (strict)")
+    parser.add_argument("--verify-aml", action="store_true",
+                        help="check a disassembly of the compiled AML: hard checks "
+                             "only, resource-shape differences are warnings")
     parser.add_argument("--quiet", action="store_true",
                         help="suppress the per-step notes")
     args = parser.parse_args(argv)
@@ -522,12 +544,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: cannot read {args.file}: {exc}", file=sys.stderr)
         return EXIT_IO
 
-    if args.verify_only:
+    if args.verify_only or args.verify_aml:
+        strict = not args.verify_aml
         try:
-            problems = verify(src)
+            problems, warnings = verify(src, strict=strict)
         except PatchError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return exc.code
+        for warning in warnings:
+            print(f"warn: {warning}", file=sys.stderr)
         if problems:
             for problem in problems:
                 print(f"error: {problem}", file=sys.stderr)

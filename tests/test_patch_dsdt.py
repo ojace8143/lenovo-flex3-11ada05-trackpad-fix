@@ -288,6 +288,23 @@ class PatcherTest(unittest.TestCase):
         self.assertEqual(self.run_patcher(path, "--verify-only").returncode,
                          EXIT_OK)
 
+    def test_verify_aml_is_lenient_about_resource_rendering(self) -> None:
+        """The compiled-AML pass must not fail on disassembler spelling."""
+        path = self.write(self.original)
+        self.assertEqual(self.run_patcher(path).returncode, EXIT_OK)
+        # Simulate a rendering we cannot recognise (iasl may print resources in
+        # forms that are not stable across versions/descriptor lengths).
+        path.write_text(path.read_text(encoding="utf-8").replace(
+            "I2cSerialBusV2", "UnrecognisedResource"), encoding="utf-8")
+
+        strict = self.run_patcher(path, "--verify-only")
+        self.assertEqual(strict.returncode, EXIT_UNSUPPORTED)
+        self.assertIn("_CRS", strict.stderr)
+
+        relaxed = self.run_patcher(path, "--verify-aml")
+        self.assertEqual(relaxed.returncode, EXIT_OK, relaxed.stderr)
+        self.assertIn("warn:", relaxed.stderr)
+
     @unittest.skipUnless(shutil.which("iasl"), "iasl (acpica-tools) not installed")
     def test_patched_table_compiles(self) -> None:
         path = self.write(self.original)
