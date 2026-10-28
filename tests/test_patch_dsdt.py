@@ -72,6 +72,35 @@ def with_unrelated_tpty_method(text: str) -> str:
     return text.replace(anchor, method + anchor, 1)
 
 
+def with_extra_buffer_case(text: str) -> str:
+    """Reproduce a table whose _DSM has an earlier selector-1 buffer case.
+
+    Some firmware exposes a function-0-style response in its own `Case` before
+    the EC-gated one, so the first `Case (... 1 ...)` in `_DSM` is *not* the one
+    that needs patching. Found on real hardware (report: "TPD0._DSM Case (0x01)
+    does not return 0x01 ... 'Return (Buffer (0x01) { 0x03 })'").
+    """
+    block = (
+        "                If ((Arg2 == 0x03))\n"
+        "                {\n"
+        "                    Switch (ToInteger (Arg0))\n"
+        "                    {\n"
+        "                        Case (One)\n"
+        "                        {\n"
+        "                            Return (Buffer (One)\n"
+        "                            {\n"
+        "                                 0x03\n"
+        "                            })\n"
+        "                        }\n"
+        "                    }\n"
+        "                }\n"
+        "\n"
+    )
+    anchor = "                If ((Arg2 == One))"
+    assert anchor in text
+    return text.replace(anchor, block + anchor, 1)
+
+
 def to_iasl_style(text: str) -> str:
     """Render constants the way iasl's disassembler does on a recompile.
 
@@ -208,6 +237,34 @@ class PatcherTest(unittest.TestCase):
         self.assertEqual(result.returncode, EXIT_OK, result.stderr)
         self.assertEqual(path.read_text(encoding="utf-8"), styled)
         self.assertIn("already", result.stdout)
+
+    def test_dsm_with_earlier_buffer_case(self) -> None:
+        """Only the EC-gated selector-1 case may be touched (real-hardware shape)."""
+        path = self.write(with_extra_buffer_case(self.original))
+
+        result = self.run_patcher(path)
+        self.assertEqual(result.returncode, EXIT_OK, result.stderr)
+
+        patched = path.read_text(encoding="utf-8")
+        body = tpd0_body(patched)
+        self.assertNotIn("TPTY", body)
+        # the untouched function-0-style buffer response survives
+        self.assertIn("Return (Buffer (One)", body)
+        self.assertEqual(self.run_patcher(path, "--verify-only").returncode,
+                         EXIT_OK)
+
+        # and a second run must be a no-op
+        before = path.read_bytes()
+        self.assertEqual(self.run_patcher(path).returncode, EXIT_OK)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_dsm_with_earlier_buffer_case_structural(self) -> None:
+        path = self.write(reindent(with_extra_buffer_case(self.original)))
+        result = self.run_patcher(path)
+        self.assertEqual(result.returncode, EXIT_OK, result.stderr)
+        self.assertIn("structural match", result.stdout)
+        self.assertEqual(self.run_patcher(path, "--verify-only").returncode,
+                         EXIT_OK)
 
     @unittest.skipUnless(shutil.which("iasl"), "iasl (acpica-tools) not installed")
     def test_patched_table_compiles(self) -> None:

@@ -178,6 +178,16 @@ def find_block(text: str, pattern: str, what: str,
     return Block(match.start(), brace, match_brace(text, brace) + 1)
 
 
+def case_blocks(body: str, value: int) -> list[tuple[int, int]]:
+    """(body_start, body_end) of every `Case (value)` block in `body`."""
+    blocks: list[tuple[int, int]] = []
+    pattern = r"Case\s*\(\s*" + int_literal(value) + r"\s*\)"
+    for match in re.finditer(pattern, body):
+        brace = open_brace_after(body, match.end())
+        blocks.append((brace + 1, match_brace(body, brace)))
+    return blocks
+
+
 def find_device(text: str, name: str = "TPD0") -> Block:
     return find_block(text, rf"\bDevice\s*\(\s*{re.escape(name)}\s*\)",
                       f"'Device ({name})'")
@@ -311,36 +321,34 @@ def plan_dsm(device_body: str) -> tuple[tuple[int, int, str] | None, list[str]]:
     dsm = find_method_in(device_body, "_DSM")
     body = device_body[dsm.body_start + 1:dsm.end - 1]
 
-    match = re.search(r"Case\s*\(\s*" + int_literal(1) + r"\s*\)", body)
-    if not match:
+    blocks = case_blocks(body, 1)
+    if not blocks:
         raise PatchError("TPD0._DSM: no Case (0x01) - unsupported layout")
 
-    brace = open_brace_after(body, match.end())
-    close = match_brace(body, brace)
-    case_start = brace + 1
-    case_body = body[case_start:close]
+    # Firmware often has more than one selector equal to 1 in _DSM (e.g. a
+    # function-0 buffer response before the EC-gated one), so pick the case that
+    # actually contains the EC dependency instead of the first match.
+    for case_start, case_close in blocks:
+        case_body = body[case_start:case_close]
+        spans = braced_statements(case_body, ("If", "ElseIf"))
+        gated = [s for s in spans if "TPTY" in case_body[s[0]:s[1]]]
+        if not gated:
+            continue
 
-    spans = braced_statements(case_body, ("If", "ElseIf"))
-    gated = [s for s in spans if "TPTY" in case_body[s[0]:s[1]]]
+        first, last = gated[0], gated[-1]
+        for span in spans:
+            if first[0] <= span[0] <= last[1] and span not in gated:
+                raise PatchError(
+                    "TPD0._DSM Case (0x01): an unrelated statement sits between "
+                    f"the EC-gated branches (line {line_number(device_body, dsm.body_start + case_start + span[0])})")
 
-    if not gated:
-        if re.search(r"Return\s*\(\s*" + int_literal(1) + r"\s*\)", case_body):
-            notes.append("_DSM: already EC-independent (left as-is)")
-            return None, notes
-        raise PatchError("TPD0._DSM Case (0x01) has no TPTY dependency and no "
-                         "Return (0x01) - unknown BIOS variant")
+        start = dsm.body_start + 1 + case_start + first[0]
+        end = dsm.body_start + 1 + case_start + last[1]
+        notes.append("_DSM: EC-gated Case (0x01) made unconditional (structural match)")
+        return (start, end, "Return (0x01)"), notes
 
-    first, last = gated[0], gated[-1]
-    for span in spans:
-        if first[0] <= span[0] <= last[1] and span not in gated:
-            raise PatchError(
-                "TPD0._DSM Case (0x01): an unrelated statement sits between the "
-                f"EC-gated branches (line {line_number(device_body, dsm.body_start + case_start + span[0])})")
-
-    start = dsm.body_start + 1 + case_start + first[0]
-    end = dsm.body_start + 1 + case_start + last[1]
-    notes.append("_DSM: EC-gated Case (0x01) made unconditional (structural match)")
-    return (start, end, "Return (0x01)"), notes
+    notes.append("_DSM: no EC-gated Case (0x01) (left as-is)")
+    return None, notes
 
 
 def bump_oem_revision(src: str) -> tuple[str, str]:
@@ -386,19 +394,22 @@ def verify(src: str) -> list[str]:
         return problems
 
     dsm_body = device_body[dsm.body_start + 1:dsm.end - 1]
-    match = re.search(r"Case\s*\(\s*" + int_literal(1) + r"\s*\)", dsm_body)
-    if not match:
+    blocks = case_blocks(dsm_body, 1)
+    if not blocks:
         problems.append("TPD0._DSM has no Case (0x01) / Case (One)")
     else:
-        brace = open_brace_after(dsm_body, match.end())
-        case_body = dsm_body[brace + 1:match_brace(dsm_body, brace)]
-        if "TPTY" in case_body:
+        if any("TPTY" in dsm_body[start:end] for start, end in blocks):
             problems.append("TPD0._DSM Case (0x01) still references TPTY")
-        if not re.search(r"Return\s*\(\s*" + int_literal(1) + r"\s*\)",
-                         case_body):
-            snippet = " ".join(case_body.split())[:120]
-            problems.append("TPD0._DSM Case (0x01) does not return 0x01 "
-                            f"(its body is: {snippet!r})")
+        # At least one of the selector-1 cases must be the patched, unconditional
+        # one. Other cases (e.g. a function-0 buffer response) are left alone.
+        returns_one = re.compile(r"Return\s*\(\s*" + int_literal(1) + r"\s*\)")
+        if not any(returns_one.search(dsm_body[start:end])
+                   for start, end in blocks):
+            snippets = "; ".join(
+                repr(" ".join(dsm_body[start:end].split())[:80])
+                for start, end in blocks)
+            problems.append("TPD0._DSM has no Case (0x01) returning 0x01 "
+                            f"(case bodies found: {snippets})")
 
     return problems
 
