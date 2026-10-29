@@ -86,7 +86,7 @@ fi
 # --- install ----------------------------------------------------------------
 [ "$OPT_DRY_RUN" -eq 1 ] || require_root
 info "checking preconditions"
-[ -f "$AML" ] || die "no $AML - run './scripts/build-dsdt.sh' first (needs 'acpica-tools')"
+check_aml_file "$AML"
 need update-initramfs "is this Ubuntu/Mint/Debian with initramfs-tools?"
 need cpio "initramfs-tools normally depends on it"
 [ -f "$HOOK_SRC" ] || die "missing $HOOK_SRC (incomplete checkout?)"

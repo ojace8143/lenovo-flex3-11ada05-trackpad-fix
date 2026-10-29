@@ -33,10 +33,13 @@ if [ "$OPT_HELP" -eq 1 ]; then
 fi
 
 FAILURES=0
+ROOT_SKIPPED=0
 
 pass() { printf '  OK    %s\n' "$*"; }
 fail() { printf '  FAIL  %s\n' "$*"; FAILURES=$((FAILURES + 1)); }
 skip() { printf '  skip  %s\n' "$*"; }
+# skip_root: a check that would work if we were root.
+skip_root() { printf '  skip  %s\n' "$*"; ROOT_SKIPPED=$((ROOT_SKIPPED + 1)); }
 
 echo "=== 1. boot-time restrictions ==="
 if command -v mokutil >/dev/null 2>&1; then
@@ -58,12 +61,12 @@ case "$lockdown" in
 esac
 
 echo "=== 2. kernel support ==="
-cfg="$(kernel_config_file || true)"
-if [ -n "$cfg" ]; then
-    if grep -qx 'CONFIG_ACPI_TABLE_UPGRADE=y' "$cfg"; then
-        pass "CONFIG_ACPI_TABLE_UPGRADE=y in $cfg"
+cfg_source="$(kernel_config_source || true)"
+if [ -n "$cfg_source" ]; then
+    if kernel_config_grep 'CONFIG_ACPI_TABLE_UPGRADE=y'; then
+        pass "CONFIG_ACPI_TABLE_UPGRADE=y in $cfg_source"
     else
-        fail "CONFIG_ACPI_TABLE_UPGRADE=y missing from $cfg"
+        fail "CONFIG_ACPI_TABLE_UPGRADE=y missing from $cfg_source"
     fi
 else
     skip "no kernel config found for $(uname -r)"
@@ -78,7 +81,7 @@ elif [ "$(id -u)" -ne 0 ] && sudo -n dmesg >/dev/null 2>&1; then
 fi
 
 if [ -z "$dmesg_text" ]; then
-    skip "cannot read dmesg (run this script as root)"
+    skip_root "cannot read dmesg (run this script as root)"
 else
     override_line="$(printf '%s\n' "$dmesg_text" \
         | grep -iE 'table upgrade|logical table override' | head -n 1)"
@@ -91,7 +94,7 @@ fi
 
 live_dsdt="/sys/firmware/acpi/tables/DSDT"
 if [ ! -r "$live_dsdt" ]; then
-    skip "cannot read $live_dsdt (run as root)"
+    skip_root "cannot read $live_dsdt (run as root)"
 elif [ ! -f "$BUILT_AML" ]; then
     skip "no $BUILT_AML to compare against (rebuild to enable this check)"
 else
@@ -131,10 +134,22 @@ else
     fail "no 04F3:3072 HID device under /sys/bus/hid/devices"
 fi
 
-if grep -q '04F3:3072' /proc/bus/input/devices 2>/dev/null; then
-    pass "input device bound: $(grep -m1 '^N: Name=' /proc/bus/input/devices | sed 's/^N: Name=//')"
-    awk '/04F3:3072/ {found=1} found && /^H: Handlers=/ {print "        " $0; exit}' \
-        /proc/bus/input/devices
+# The touchpad's block in /proc/bus/input/devices. The "I:" line prints the HID
+# IDs in lowercase (Vendor=04f3 Product=3072) while the "N: Name=" line has the
+# uppercase 04F3:3072, so match either.
+touchpad_block="$(awk 'BEGIN { RS = ""; ORS = "\n" }
+    /04F3:3072/ || (/Vendor=04f3/ && /Product=3072/) { print; exit }' \
+    /proc/bus/input/devices 2>/dev/null)"
+
+if [ -n "$touchpad_block" ]; then
+    tp_name="$(printf '%s\n' "$touchpad_block" | sed -n 's/^N: Name="\(.*\)"$/\1/p')"
+    tp_handlers="$(printf '%s\n' "$touchpad_block" | sed -n 's/^H: Handlers=//p')"
+    tp_event="$(printf '%s\n' "$tp_handlers" | tr ' ' '\n' | grep -m1 '^event' || true)"
+    if [ -n "$tp_event" ]; then
+        pass "input device bound: ${tp_name:-?} (/dev/input/$tp_event)"
+    else
+        pass "input device bound: ${tp_name:-?}"
+    fi
 else
     fail "04F3:3072 does not appear in /proc/bus/input/devices"
 fi
@@ -144,6 +159,13 @@ if [ "$FAILURES" -gt 0 ]; then
     echo "RESULT: $FAILURES check(s) failed."
     echo "See README.md -> Troubleshooting, and docs/diagnosis.md."
     exit 1
+fi
+
+if [ "$ROOT_SKIPPED" -gt 0 ]; then
+    echo "RESULT: hardware checks passed, but $ROOT_SKIPPED override check(s) needed root."
+    echo "Re-run with sudo to confirm the patched table is actually loaded:"
+    echo "  sudo ./scripts/verify.sh"
+    exit 0
 fi
 
 echo "RESULT: all checks passed. The touchpad should work."

@@ -10,6 +10,7 @@ synthetic table in tests/fixtures/dsdt-ec-gated.dsl.
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 import subprocess
 import sys
@@ -305,6 +306,24 @@ class PatcherTest(unittest.TestCase):
         self.assertEqual(relaxed.returncode, EXIT_OK, relaxed.stderr)
         self.assertIn("warn:", relaxed.stderr)
 
+    def test_conflicting_modes_rejected(self) -> None:
+        path = self.write(self.original)
+        result = self.run_patcher(path, "--diff", "--verify-only")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("not allowed with", result.stderr)
+        self.assertEqual(path.read_text(encoding="utf-8"), self.original)
+
+    def test_reports_diffstat_and_already_patched_note(self) -> None:
+        path = self.write(self.original)
+        first = self.run_patcher(path)
+        self.assertEqual(first.returncode, EXIT_OK, first.stderr)
+        self.assertIn("line(s) added", first.stdout)
+        self.assertIn("line(s) removed", first.stdout)
+
+        second = self.run_patcher(path)
+        self.assertEqual(second.returncode, EXIT_OK, second.stderr)
+        self.assertIn("already EC-independent", second.stdout)
+
     @unittest.skipUnless(shutil.which("iasl"), "iasl (acpica-tools) not installed")
     def test_patched_table_compiles(self) -> None:
         path = self.write(self.original)
@@ -319,6 +338,39 @@ class PatcherTest(unittest.TestCase):
         output = compile_result.stdout + compile_result.stderr
         self.assertEqual(compile_result.returncode, 0, output)
         self.assertIn("0 Errors", output)
+
+
+class HelperTest(unittest.TestCase):
+    """Direct tests for the small parsing helpers (no CLI, no fixtures)."""
+
+    def test_int_literal_accepts_every_rendering(self) -> None:
+        self.assertIsNotNone(re.fullmatch(patch_dsdt.int_literal(1), "One"))
+        self.assertIsNotNone(re.fullmatch(patch_dsdt.int_literal(1), "0x0001"))
+        self.assertIsNotNone(re.fullmatch(patch_dsdt.int_literal(1), "1"))
+        self.assertIsNone(re.fullmatch(patch_dsdt.int_literal(1), "0x15"))
+
+        self.assertIsNotNone(re.fullmatch(patch_dsdt.int_literal(0x15), "0x0015"))
+        self.assertIsNotNone(re.fullmatch(patch_dsdt.int_literal(0x15), "21"))
+        self.assertIsNone(re.fullmatch(patch_dsdt.int_literal(0x15), "0x002C"))
+
+    def test_has_i2c_address_accepts_descriptor_renderings(self) -> None:
+        variants = [
+            "I2cSerialBusV2 (0x0015, ControllerInitiated",
+            "I2cSerialBus (0x15, ControllerInitiated",
+            "I2cSerialBus (21, ControllerInitiated",
+            "I2cSerialBusV2 (0x0015 /* slave address */, ControllerInitiated",
+        ]
+        for text in variants:
+            with self.subTest(text=text):
+                self.assertTrue(patch_dsdt.has_i2c_address(text, 0x15), text)
+
+        self.assertFalse(patch_dsdt.has_i2c_address("I2cSerialBusV2 (0x002C,", 0x15))
+        self.assertFalse(patch_dsdt.has_i2c_address("Buffer (0x0E) { 0x00 }", 0x15))
+
+    def test_strip_comments(self) -> None:
+        self.assertEqual(
+            patch_dsdt.strip_comments("a /* b */ c // d\n e").split(),
+            ["a", "c", "e"])
 
 
 if __name__ == "__main__":

@@ -77,7 +77,7 @@ fi
 
 [ "$OPT_DRY_RUN" -eq 1 ] || require_root
 need mkinitcpio "pacman -S mkinitcpio"
-[ -f "$AML" ] || die "no $AML - run './scripts/build-dsdt.sh' first"
+check_aml_file "$AML"
 if [ ! -f "$MKINITCPIO_HOOK" ]; then
     die "this mkinitcpio has no 'acpi_override' hook ($MKINITCPIO_HOOK is missing).
      Update mkinitcpio (pacman -Syu mkinitcpio), or use the manual cpio method in
@@ -110,6 +110,8 @@ rebuild_initramfs
 report_installed
 
 info "checking the generated initramfs"
-check_initrd_for_table "/boot/initramfs-$(uname -r).img"
+check_boot_images_for_table
 
+echo
+echo "revert with:  sudo $0 --uninstall"
 print_verify_steps

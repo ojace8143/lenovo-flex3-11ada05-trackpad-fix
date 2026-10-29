@@ -26,11 +26,15 @@ touchpad fix without Windows, so the config below is the pragmatic answer.
 
 See `config/hypr/input.lua` for the snippet. Key points:
 
-- `tap_button_map = "lrm"` — 1 finger left, 2 right, 3 middle (when tapping
-  cooperates).
-- `clickfinger_behavior = false` — keep *button-area* method so a physical
-  press on the bottom-right corner is a right-click.
 - `tap_to_click = true` — single-finger tap stays a reliable left-click.
+- `clickfinger_behavior = false` — keep the *button-area* method, so a physical
+  press on the bottom-right corner is a right-click. This is the dependable
+  right-click on this hardware.
+- `tap_button_map = "lrm"` — only affects taps that libinput *does* classify as
+  multi-finger (in practice: three-finger taps → middle click). It cannot
+  rescue two-finger taps, because the sequential contact lift makes libinput
+  see a single finger at release, which is a left click regardless of mapping.
+  Drop the line if you prefer libinput's default; it changes nothing here.
 
 ## Why the physical "no buttons" matters
 

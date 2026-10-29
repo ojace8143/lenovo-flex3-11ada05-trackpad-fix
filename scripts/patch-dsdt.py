@@ -521,19 +521,35 @@ def unified_diff(original: str, patched: str, path: Path) -> str:
     return "".join(diff)
 
 
+def diff_stats(original: str, patched: str) -> tuple[int, int]:
+    """(added, removed) line counts, for a short summary after patching."""
+    added = removed = 0
+    diff = difflib.unified_diff(original.splitlines(),
+                                patched.splitlines(), lineterm="")
+    for line in diff:
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            added += 1
+        elif line.startswith("-"):
+            removed += 1
+    return added, removed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Patch the Flex 3 11ADA05 DSDT so TPD0 is EC-independent.",
         epilog="Exit codes: 0 ok, 1 I/O error, 2 usage, 3 unsupported table.",
     )
     parser.add_argument("file", type=Path, help="disassembled DSDT (dsdt.dsl)")
-    parser.add_argument("--diff", action="store_true",
-                        help="print a unified diff and do not write anything")
-    parser.add_argument("--verify-only", action="store_true",
-                        help="check that FILE is already correctly patched (strict)")
-    parser.add_argument("--verify-aml", action="store_true",
-                        help="check a disassembly of the compiled AML: hard checks "
-                             "only, resource-shape differences are warnings")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--diff", action="store_true",
+                      help="print a unified diff and do not write anything")
+    mode.add_argument("--verify-only", action="store_true",
+                      help="check that FILE is already correctly patched (strict)")
+    mode.add_argument("--verify-aml", action="store_true",
+                      help="check a disassembly of the compiled AML: hard checks "
+                           "only, resource-shape differences are warnings")
     parser.add_argument("--quiet", action="store_true",
                         help="suppress the per-step notes")
     args = parser.parse_args(argv)
@@ -577,6 +593,15 @@ def main(argv: list[str] | None = None) -> int:
     if not args.quiet:
         for note in notes:
             print(f"    {note}")
+
+    if not changed and not args.quiet:
+        print("    note: this table is already EC-independent - nothing to patch.")
+        print("          If you are currently booted with the override active, the")
+        print("          dump already contains the fix; rebuilding it is harmless.")
+
+    if changed and not args.quiet:
+        added, removed = diff_stats(src, patched)
+        print(f"    {added} line(s) added, {removed} line(s) removed")
 
     if changed:
         try:

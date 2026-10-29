@@ -1,5 +1,5 @@
 build/
 *.aml
 *.cpio
-*.dat
 __pycache__/
+*.pyc

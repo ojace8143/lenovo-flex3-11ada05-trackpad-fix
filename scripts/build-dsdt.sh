@@ -154,6 +154,7 @@ next (pick one):
   sudo ./scripts/install-arch.sh        # plain Arch (mkinitcpio)
   sudo ./scripts/install-ubuntu.sh      # Linux Mint / Ubuntu / Debian
   sudo ./scripts/install-void.sh        # Void Linux (dracut)
+  sudo ./scripts/install-dracut.sh      # Fedora / openSUSE / any dracut
 
-other distros: see docs/manual-install.md (uses build/acpi_override).
+other distros: see docs/distros.md and docs/manual-install.md.
 EOF

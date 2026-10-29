@@ -16,6 +16,10 @@ hl.config({
   input = {
     touchpad = {
       tap_to_click = true,        -- single-finger tap = left click
+      -- Only affects taps libinput classifies as multi-finger (in practice:
+      -- three-finger = middle). Two-finger taps land as LEFT clicks on this
+      -- hardware no matter what is mapped here, because the contacts lift
+      -- sequentially and libinput sees one finger at release. Safe to drop.
       tap_button_map = "lrm",     -- 1 finger left, 2 right, 3 middle
       clickfinger_behavior = false, -- keep button-area: corner press = right-click
       natural_scroll = false,     -- Chrome-style scrolling (matches Omarchy default)

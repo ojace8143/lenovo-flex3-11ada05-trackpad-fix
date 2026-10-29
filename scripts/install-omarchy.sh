@@ -72,7 +72,8 @@ if [ "$OPT_UNINSTALL" -eq 1 ]; then
 fi
 
 [ "$OPT_DRY_RUN" -eq 1 ] || require_root
-[ -f "$AML" ] || die "no $AML - run './scripts/build-dsdt.sh' first"
+check_aml_file "$AML"
+need mkinitcpio "pacman -S mkinitcpio"
 if [ ! -f "$MKINITCPIO_HOOK" ]; then
     die "this mkinitcpio has no 'acpi_override' hook ($MKINITCPIO_HOOK is missing).
      Update mkinitcpio, or use the manual cpio method in docs/manual-install.md."
@@ -105,5 +106,7 @@ echo "  hook:   $HOOK_LINE in $DROPIN"
 echo
 echo "note: the UKI is a PE binary, so its contents cannot be inspected here."
 echo "      verification happens after reboot:"
+echo
+echo "revert with:  sudo $0 --uninstall"
 
 print_verify_steps

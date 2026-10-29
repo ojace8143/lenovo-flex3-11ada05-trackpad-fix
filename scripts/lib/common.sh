@@ -44,6 +44,7 @@ repo_root() { ( cd "$_COMMON_DIR/../.." && pwd ); }
 #     u  --uninstall      (OPT_UNINSTALL)
 #     n  --dry-run        (OPT_DRY_RUN)
 #     h  --help           (OPT_HELP)
+# shellcheck disable=SC2034  # the OPT_* results are read by the sourcing script
 parse_args() {
     local allowed="${1:-}"
     shift || true
@@ -83,6 +84,41 @@ detect_distro() {
     fi
 }
 
+# detect_initramfs: prints initramfs-tools, dracut, mkinitcpio or unknown.
+#   Prefers whichever generator owns the running kernel's image, so a Debian or
+#   Arch box that uses dracut is not mistaken for a stock one.
+detect_initramfs() {
+    local rel
+    rel="$(uname -r)"
+
+    if [ -e "/boot/initrd.img-$rel" ]; then
+        echo initramfs-tools
+        return
+    fi
+    if [ -e "/boot/initramfs-$rel.img" ]; then
+        echo dracut
+        return
+    fi
+    if [ -e /boot/initramfs-linux.img ] && command -v mkinitcpio >/dev/null 2>&1; then
+        echo mkinitcpio
+        return
+    fi
+
+    if [ -d /etc/dracut.conf.d ] || command -v dracut >/dev/null 2>&1; then
+        echo dracut
+        return
+    fi
+    if [ -d /etc/initramfs-tools ]; then
+        echo initramfs-tools
+        return
+    fi
+    if command -v mkinitcpio >/dev/null 2>&1; then
+        echo mkinitcpio
+        return
+    fi
+    echo unknown
+}
+
 # kernel_config_file: prints the path of the running kernel's config, if any.
 kernel_config_file() {
     local rel f
@@ -96,16 +132,47 @@ kernel_config_file() {
     return 1
 }
 
+# kernel_config_source: prints wherever the running kernel's config can be read.
+#   Arch (and other IKCONFIG_PROC kernels) ship no /boot/config-*, only
+#   /proc/config.gz, so both have to be considered.
+kernel_config_source() {
+    local cfg
+    if cfg="$(kernel_config_file)"; then
+        printf '%s\n' "$cfg"
+        return 0
+    fi
+    if [ -r /proc/config.gz ] && command -v zcat >/dev/null 2>&1; then
+        printf '%s\n' "/proc/config.gz"
+        return 0
+    fi
+    return 1
+}
+
+# kernel_config_grep PATTERN: exit 0 if the kernel config has that exact line.
+#   Returns 2 when the config cannot be read at all.
+kernel_config_grep() {
+    local pattern="$1" cfg
+    if cfg="$(kernel_config_file)"; then
+        grep -qx "$pattern" "$cfg"
+        return
+    fi
+    if [ -r /proc/config.gz ] && command -v zcat >/dev/null 2>&1; then
+        zcat /proc/config.gz 2>/dev/null | grep -qx "$pattern"
+        return
+    fi
+    return 2
+}
+
 # check_kernel_config: warn if CONFIG_ACPI_TABLE_UPGRADE is definitely off.
 # Returns 0 when fine (or undeterminable), 1 when the kernel cannot do this.
 check_kernel_config() {
-    local cfg
-    if cfg="$(kernel_config_file)"; then
-        if ! grep -qx 'CONFIG_ACPI_TABLE_UPGRADE=y' "$cfg"; then
-            warn "$cfg does not enable CONFIG_ACPI_TABLE_UPGRADE=y - the override will be ignored."
-            return 1
+    local src
+    if src="$(kernel_config_source)"; then
+        if kernel_config_grep 'CONFIG_ACPI_TABLE_UPGRADE=y'; then
+            return 0
         fi
-        return 0
+        warn "$src does not enable CONFIG_ACPI_TABLE_UPGRADE=y - the override will be ignored."
+        return 1
     fi
     warn "cannot find the config for kernel $(uname -r); assuming CONFIG_ACPI_TABLE_UPGRADE=y"
     return 0
@@ -252,6 +319,51 @@ check_initrd_for_table() {
         *) echo "    (cannot inspect $label - verify after reboot with ./scripts/verify.sh)" ;;
     esac
     return 0
+}
+
+# check_boot_images_for_table
+#   Find the initramfs/UKI images this machine actually boots and check them.
+#   Needed because mkinitcpio presets name their output freely
+#   (/boot/initramfs-linux.img, UKIs, ...), not initramfs-$(uname -r).img.
+check_boot_images_for_table() {
+    local image found=0
+    for image in /boot/initramfs-*.img; do
+        [ -e "$image" ] || continue
+        found=1
+        check_initrd_for_table "$image" "${image##*/}"
+    done
+
+    if [ "$found" -eq 0 ]; then
+        for image in /boot/EFI/Linux/*.efi /efi/EFI/Linux/*.efi /boot/*.efi; do
+            [ -e "$image" ] || continue
+            found=1
+            check_initrd_for_table "$image" "${image##*/}"
+        done
+    fi
+
+    if [ "$found" -eq 0 ]; then
+        echo "    (no initramfs image found under /boot - verify after reboot)"
+    fi
+    return 0
+}
+
+# check_aml_file FILE
+#   Refuse to install something that is not a plausible DSDT, instead of
+#   discovering it after a reboot.
+check_aml_file() {
+    local file="$1" signature size
+    if [ ! -f "$file" ]; then
+        die "no $file - run './scripts/build-dsdt.sh' first"
+    fi
+    signature="$(dd if="$file" bs=1 count=4 status=none 2>/dev/null)"
+    if [ "$signature" != "DSDT" ]; then
+        die "$file does not start with the 'DSDT' signature (got '${signature}')
+     - rebuild it with './scripts/build-dsdt.sh'."
+    fi
+    size="$(stat -c%s "$file" 2>/dev/null || echo 0)"
+    if [ "$size" -le 1024 ]; then
+        die "$file is only ${size} bytes - that is not a real DSDT; rebuild it."
+    fi
 }
 
 # print_verify_steps: the shared "now reboot and check" footer.

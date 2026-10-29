@@ -72,10 +72,11 @@ build and prepends it via `prepend_earlyinitramfs()` — the API documented in
 identical to the mkinitcpio early-cpio layout, with the stock gzip/zstd
 initramfs and no `COMPRESS` changes.
 
-dracut (Void Linux) does the same thing natively: with `acpi_override="yes"` and
-`acpi_table_dir="/etc/dracut/acpi_override"` it builds a separate uncompressed
-cpio from every `*.aml` in that directory and glues it in front of the
-compressed image. `scripts/install-void.sh` only writes that config and rebuilds.
+dracut (Void/Fedora/openSUSE) does the same thing natively: with
+`acpi_override="yes"` and `acpi_table_dir="/etc/dracut/acpi_override"` it builds
+a separate uncompressed cpio from every `*.aml` in that directory and glues it
+in front of the compressed image. `scripts/install-dracut.sh` only writes that
+config and rebuilds.
 
 ## Why not just downgrade the BIOS?
 
@@ -98,3 +99,11 @@ This repo sidesteps all three.
   byte-identical `kernel/firmware/acpi/dsdt.aml` (**28001 bytes**).
 - Post-reboot: `i2c-MSFT0001:00` present, input device
   `MSFT0001:00 04F3:3072 Touchpad` live, HID id `04F3:3072` confirmed.
+
+## Evidence on a second unit (Void Linux, dracut)
+
+- Same fix applies unchanged: dracut packs `dsdt.aml` into the leading
+  uncompressed cpio via `acpi_override="yes"`, the kernel applies the override,
+  and the touchpad appears after reboot.
+- `scripts/verify.sh` reports the loaded DSDT byte-identical to
+  `build/dsdt.aml`, plus the `i2c-MSFT0001:00` and `04F3:3072` devices.

@@ -1,8 +1,10 @@
 # Manual install (any distro)
 
-The installers cover mkinitcpio (Arch/Omarchy) and initramfs-tools (Mint/
-Ubuntu/Debian). Everything else works the same way; only the plumbing that puts
-the table into the initramfs differs. The kernel requirement is always the same:
+The installers cover mkinitcpio (Arch/Omarchy), initramfs-tools (Mint/Ubuntu/
+Debian) and dracut (Void/Fedora/openSUSE) — see
+[`distros.md`](distros.md) for the full list and which files each one writes.
+Everything else works the same way; only the plumbing that puts the table into
+the initramfs differs. The kernel requirement is always the same:
 
 - `CONFIG_ACPI_TABLE_UPGRADE=y` in the kernel config,
 - Secure Boot **off** and lockdown `[none]`,
@@ -40,10 +42,15 @@ cpio concatenated ahead of the compressed image, which is exactly what the
 kernel wants. It also refuses (with a warning) if `CONFIG_ACPI_TABLE_UPGRADE`
 is missing.
 
-On **Void Linux** this is fully automated (including `--uninstall`, `--dry-run`
-and an initramfs contents check) by
-[`scripts/install-void.sh`](../scripts/install-void.sh); the recipe above is
-what it runs, and is the manual fallback for other dracut distros.
+On **Void, Fedora, openSUSE and any other dracut system** this is fully
+automated by [`scripts/install-dracut.sh`](../scripts/install-dracut.sh)
+(`install-void.sh` is the Void-named wrapper): it stages the table, writes that
+drop-in, rebuilds every initramfs, and supports `--uninstall`/`--dry-run`. The
+recipe above is the manual fallback.
+
+On atomic/ostree hosts (Silverblue, Bazzite, …) `/etc` persists and the drop-in
+is honoured when rpm-ostree/bootc regenerate the initramfs — untested, but the
+same files apply.
 
 ## GRUB with a separate initrd
 
@@ -64,6 +71,12 @@ loader can read it) and regenerate the bootloader config.
 When building a unified kernel image, pass the cpio first in the initrd list
 (for example `ukify build --initrd build/acpi_override ...`). A UKI is a PE
 binary, so nothing can inspect it afterwards; verify after reboot instead.
+
+## Not supported here
+
+- **NixOS** builds its initrd declaratively; the "write a file to /etc and
+  rebuild" model does not apply. It would need a custom initrd module.
+- **Alpine** uses `mkinitfs`; the manual cpio below may work but is untested.
 
 ## Verify
 

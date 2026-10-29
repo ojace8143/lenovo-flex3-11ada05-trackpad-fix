@@ -25,24 +25,39 @@ a bricked firmware — and it survives kernel updates.
 - `TPD0._DSM` function 1 returns `0x01` unconditionally.
 - DSDT OEM revision is bumped so the kernel accepts the override.
 
-## Tested on
+## Supported systems
+
+The machine this was developed on:
 
 | Thing | Value |
 |---|---|
 | Machine | Lenovo IdeaPad Flex 3 11ADA05 (`82G4`) |
 | BIOS | `FPCN26WW` (05/2022) — fixed, **no downgrade needed** |
-| Distro | Omarchy (Arch-based, Hyprland, limine UKI) — installer for **Linux Mint / Ubuntu / Debian** included |
-| Kernel | `7.2.5-3-omarchy` (works on Ubuntu-family kernels too) |
+| Distro | Omarchy (Arch-based, Hyprland, limine UKI) |
+| Kernel | `7.2.5-3-omarchy` |
 | Secure Boot | OFF (required — see below) |
 
 The mechanism is a **kernel ACPI table override**, so it is not distro-specific —
-only the initramfs plumbing differs. Installers are provided for Omarchy/Arch,
-Linux Mint/Ubuntu/Debian and Void Linux; anything else can follow
-[`docs/manual-install.md`](docs/manual-install.md).
+only the initramfs plumbing differs. What works today:
 
-- **Omarchy / Arch** (mkinitcpio `acpi_override` hook, limine UKI) — `install-omarchy.sh`
+| System | Mechanism | Status |
+|---|---|---|
+| Omarchy / Arch | mkinitcpio `acpi_override` hook | tested (original unit) |
+| Void Linux | dracut `acpi_override` | tested (second unit, Oct 2026) |
+| Linux Mint / Ubuntu / Debian | initramfs-tools hook | semi-tested, see notes |
+| Fedora / openSUSE (dracut) | dracut `acpi_override` | installer provided, untested |
+| NixOS / Alpine | — | not supported, see [`docs/distros.md`](docs/distros.md) |
+
+Installers:
+
+- **Omarchy / Arch** (mkinitcpio, limine UKI or GRUB) — `install-omarchy.sh` / `install-arch.sh`
 - **Linux Mint / Ubuntu / Debian** (initramfs-tools hook) — `install-ubuntu.sh`
-- **Void Linux** (dracut's native `acpi_override`) — `install-void.sh`
+- **Void Linux** — `install-void.sh`
+- **Any other dracut distro** (Fedora, openSUSE, Debian/Arch with dracut) — `install-dracut.sh`
+
+Full details, including exactly which files each one writes, are in
+[`docs/distros.md`](docs/distros.md). Anything else can follow
+[`docs/manual-install.md`](docs/manual-install.md).
 
 ## Prerequisites
 
@@ -136,8 +151,14 @@ sudo ./scripts/install-void.sh
 ```
 
 Void uses `dracut`, which supports ACPI table overrides natively — no hook
-needed. The script stages the table at `/etc/dracut/acpi_override/dsdt.aml`,
-writes `/etc/dracut.conf.d/99-lenovo-flex3-acpi-override.conf`
+needed. `install-void.sh` is a thin wrapper around the generic dracut installer:
+
+```sh
+sudo ./scripts/install-dracut.sh        # Fedora, openSUSE, or Void directly
+```
+
+It stages the table at `/etc/dracut/acpi_override/dsdt.aml`, writes
+`/etc/dracut.conf.d/99-lenovo-flex3-acpi-override.conf`
 
 ```sh
 acpi_override="yes"
@@ -146,15 +167,14 @@ acpi_table_dir="/etc/dracut/acpi_override"
 
 and runs `dracut --force --regenerate-all`. Dracut packs every `*.aml` from
 that directory into a separate uncompressed cpio placed in front of the
-compressed image, which is exactly what the kernel reads. Void's kernel
-packages rerun dracut on update, so this survives kernel upgrades with nothing
-else to maintain. Remove it with `sudo ./scripts/install-void.sh --uninstall`.
-(`sudo xbps-install -S acpica-utils python3 cpio` is what the table build needs.)
+compressed image, which is exactly what the kernel reads. Kernel packages on
+these distros normally rerun dracut on update, so this survives kernel upgrades
+with nothing else to maintain. Remove it with `--uninstall`.
 
-**Anything else (Fedora, openSUSE, …):** see
-[`docs/manual-install.md`](docs/manual-install.md). dracut has native support
-for ACPI overrides; mkinitcpio and initramfs-tools need the early-cpio trick
-described above.
+**Anything else:** see [`docs/distros.md`](docs/distros.md) and
+[`docs/manual-install.md`](docs/manual-install.md) (manual cpio for mkinitcpio,
+initramfs-tools or a hand-rolled initrd). NixOS and Alpine are documented as
+unsupported.
 
 ### 3. Reboot and verify
 
@@ -165,7 +185,11 @@ sudo ./scripts/verify.sh; echo "exit=$?"
 `verify.sh` exits **0** only when the override is live (`ACPI: Table Upgrade` in
 dmesg, loaded DSDT identical to `build/dsdt.aml`), the `i2c-MSFT0001:00` device
 exists, and the `04F3:3072` touchpad is bound. It exits **1** and names the
-failing check otherwise; missing root just skips the checks that need it.
+failing check otherwise.
+
+Run it with `sudo`: the dmesg and `/sys/firmware/acpi/tables` checks need root.
+Without root they are reported as `skip` and the summary says how many checks
+were skipped, so a non-root run can never silently claim success.
 
 By hand:
 
@@ -204,6 +228,18 @@ sudo ./scripts/install-omarchy.sh --uninstall     # Omarchy
 
 # Linux Mint / Ubuntu / Debian
 sudo ./scripts/install-ubuntu.sh --uninstall
+
+# Void / Fedora / openSUSE (dracut)
+sudo ./scripts/install-void.sh --uninstall
+sudo ./scripts/install-dracut.sh --uninstall
+```
+
+If you are not sure what was installed (switched distro, hand-edited files,
+distro detection picked wrong), remove everything at once:
+
+```sh
+sudo ./scripts/uninstall-all.sh       # or: sudo make purge
+sudo ./scripts/uninstall-all.sh --dry-run   # show first
 ```
 
 If the scripts are gone, do it by hand:
@@ -238,8 +274,12 @@ so a full revert is always possible.
 - `make test` — offline tests for the DSDT patcher (synthetic table fixtures, no
   hardware and no firmware dumps involved)
 - `make lint` — shellcheck on every script plus a Python syntax check
-- `make` — `build`, `install`, `verify`, `uninstall`, `clean` helpers; see
-  `make help`
+- `make distro` — print the detected distro and initramfs generator
+- `make` — `build`, `install`, `verify`, `uninstall`, `purge`, `clean` helpers;
+  see `make help`
+
+Supported systems, per-installer details and the "not supported" list live in
+[`docs/distros.md`](docs/distros.md).
 
 ## License
 
@@ -279,8 +319,10 @@ model. It semi-worked; I had to do some shenanigans to get it functional.)_
 > no longer be shadowed by a stale archive. Still **not yet exercised on real
 > Mint/Ubuntu hardware** — if you test it, please report back.)_
 >
-> _(Edit 2026-10-28: Void Linux support via `scripts/install-void.sh`, using
-> dracut's native `acpi_override` instead of a custom hook. The initramfs
-> plumbing was verified with dracut 112 in a sandbox build (the table lands in
-> `kernel/firmware/acpi/dsdt.aml` inside the leading uncompressed cpio), but it
-> has **not been booted on the Flex 3 yet** — report back if it misbehaves.)_
+> _(Edit 2026-10-28: Void Linux support landed as `scripts/install-dracut.sh`
+> (with `install-void.sh` as the Void entry point), using dracut's native
+> `acpi_override` instead of a custom hook. **Confirmed working on a second
+> Flex 3 11ADA05 running Void Linux** — the touchpad appears after reboot and
+> `verify.sh` passes. A generic dracut installer now covers Fedora/openSUSE,
+> and `scripts/uninstall-all.sh` (`make purge`) removes everything regardless
+> of which installer was used.)_
